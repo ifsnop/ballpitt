@@ -7,21 +7,34 @@
 <script src="https://cdnjs.cloudflare.com/ajax/libs/matter-js/0.19.0/matter.min.js"></script>
 <style>
   * { margin:0; padding:0; box-sizing:border-box; }
-  html, body { background:#0a0a0f; overflow:hidden; width:100%; height:100%; font-family:'Courier New',monospace; touch-action:none; }
+  html, body {
+    background:#0a0a0f; overflow:hidden;
+    width:100%; height:100%;
+    font-family:'Courier New',monospace;
+    touch-action:none; /* prevent scroll/zoom on touch */
+  }
   #debug {
     position:fixed; top:0; left:0; right:0; z-index:100;
     background:rgba(0,255,120,0.07); border-bottom:1px solid rgba(0,255,120,0.18);
     padding:3px 8px; font-size:10px; color:#00ff78; letter-spacing:0.04em;
-    display:flex; flex-wrap:wrap; align-items:center; backdrop-filter:blur(4px); line-height:1.65;
+    display:flex; flex-wrap:wrap; align-items:center;
+    backdrop-filter:blur(4px); line-height:1.65;
   }
   .dg { display:flex; align-items:center; gap:3px; margin-right:2px; }
-  .dl { opacity:0.4; font-size:9px; } .dv { font-weight:bold; font-size:10px; min-width:34px; }
+  .dl { opacity:0.4; font-size:9px; }
+  .dv { font-weight:bold; font-size:10px; min-width:34px; }
   .ds { opacity:0.18; margin:0 5px; }
-  #fps-box { position:fixed; bottom:8px; right:10px; z-index:100; font-family:'Courier New',monospace; font-size:10px; color:#00ff78; opacity:0.55; pointer-events:none; }
+  #fps-box {
+    position:fixed; bottom:8px; right:10px; z-index:100;
+    font-family:'Courier New',monospace; font-size:10px;
+    color:#00ff78; opacity:0.55; pointer-events:none;
+  }
+  canvas { display:block; position:fixed; top:0; left:0; }
+  #gl  { z-index:1; }
+  #c2d { z-index:2; }
 </style>
 </head>
 <body>
-
 <canvas id="gl"></canvas>
 <canvas id="c2d"></canvas>
 <div id="debug">cargando...</div>
@@ -31,160 +44,191 @@
 'use strict';
 const { Engine, Runner, Bodies, Body, Composite } = Matter;
 
-// ── Device ─────────────────────────────────────────────────────────────────
-const IS_DESKTOP = !('ontouchstart' in window) && !/Mobi|Android/i.test(navigator.userAgent);
+// ═══════════════════════════════════════════════════════════════════
+// CONSTANTS
+// ═══════════════════════════════════════════════════════════════════
+const RADIUS_MAX    = 44;
+const RADIUS_MIN    = 22;
+const NUM_BALLS     = 20;
+const WALL_T        = 40;            // wall thickness
+const GAP_SIZE      = RADIUS_MAX * 2 * 1.1;  // 10% bigger than largest ball diameter
+const RESTITUTION   = 0.88;
+const FRICTION      = 0.0005;
+const FRICTION_AIR  = 0.003;
+const ACCEL_ALPHA   = 0.18;          // low-pass filter for accelerometer
+const SPAWN_DELAY   = 350;           // ms between consecutive spawns
+const ESCAPE_MS     = 150;           // ms between escape checks
 
-// ── Constants ──────────────────────────────────────────────────────────────
-const WALL         = 40;
-const RADIUS_MAX   = 44;
-const RADIUS_MIN   = 22;
-const NUM_BALLS    = 20;
-const RESTITUTION  = 0.88;
-const FRICTION     = 0.0005;
-const FRICTION_AIR = 0.003;
-const SENSOR_ALPHA = 0.18;
-const GAP_MIN      = RADIUS_MAX * 2 * 1.1; // gap always 10% bigger than largest ball diameter
-const SPAWN_DELAY   = 350;    // ms between spawns
+// Desktop: simulate phone held vertical → gravity straight down (gy=1)
+const IS_MOBILE = ('ontouchstart' in window) || /Mobi|Android|iPhone|iPad/i.test(navigator.userAgent);
 
-// ── Mutable state ──────────────────────────────────────────────────────────
-let W, H;
+// ═══════════════════════════════════════════════════════════════════
+// STATE
+// ═══════════════════════════════════════════════════════════════════
+let W, H;                    // screen dimensions, updated on resize
 let engine, runner;
-let balls   = [];   // [{body, radius}]
-let gaps    = null; // {topL,topR,leftT,leftB,rightT,rightB}
-let ctx2d, glState;
-let ax = 0, ay = 0, az = 0;
-let sensorOk = false;
-let fps = 0, _lastFpsTime = 0, _frameCount = 0;
+let balls     = [];          // [{body, radius, tint}]
+let gaps      = null;        // {topL,topR, leftT,leftB, rightT,rightB}
+let glState   = null;
+let ctx2d     = null;
 let drawLoopId = null;
-let spawnQueue = 0;
-let lastSpawnMs = 0;
-let lastEscapeMs = 0;
 
-// ── Drag (desktop) ─────────────────────────────────────────────────────────
-let drag = null;          // {entry}
+// Accelerometer (mobile only)
+let ax = 0, ay = 0, az = 0;
+let sensorOk  = false;
+let sensorListening = false; // prevent duplicate listeners on rebuild
+
+// Drag
+let drag = null;             // {entry, id} — id=pointerId or -1 for mouse
 let mX=0, mY=0, mVX=0, mVY=0;
 
-// ── Debug helpers ──────────────────────────────────────────────────────────
-const dbgEl  = document.getElementById('debug');
-const fpsEl  = document.getElementById('fps-box');
+// Spawn
+let spawnQueue  = 0;
+let lastSpawnMs = 0;
+let lastEscapeMs= 0;
+
+// FPS
+let fps=0, _fc=0, _ft=0;
+
+// ═══════════════════════════════════════════════════════════════════
+// BALL COLOURS
+// ═══════════════════════════════════════════════════════════════════
+const TINTS = [
+  [1.00,0.35,0.35],[1.00,0.60,0.20],[1.00,0.90,0.25],
+  [0.40,0.90,0.40],[0.25,0.80,0.75],[0.30,0.65,1.00],
+  [0.55,0.35,1.00],[1.00,0.35,0.80],[0.90,0.55,0.30],
+  [0.35,1.00,0.60],
+];
+let tintIdx = 0;
+
+// ═══════════════════════════════════════════════════════════════════
+// DEBUG BAR
+// ═══════════════════════════════════════════════════════════════════
+const dbgEl = document.getElementById('debug');
+const fpsEl = document.getElementById('fps-box');
 function f1(n){ const s=(+n).toFixed(1); return s==='-0.0'?'0.0':s; }
 function f2(n){ const s=(+n).toFixed(2); return s==='-0.00'?'0.00':s; }
-function f0(n){ const s=(+n).toFixed(0); return s==='-0'?'0':s; }
 function dg(l,v){ return `<span class="dg"><span class="dl">${l}</span><span class="dv">${v}</span></span>`; }
 const SEP = '<span class="ds">|</span>';
 
 function updateDebug(){
+  const {gx,gy} = currentGravity();
   dbgEl.innerHTML =
-    dg('DEV', IS_DESKTOP?'PC':'MOB') + SEP +
-    dg('SNS', sensorOk?'✓':'✗') + SEP +
-    dg('ANG', orientAngle()) + SEP +
-    dg('AX',f1(ax))+SEP+dg('AY',f1(ay))+SEP+dg('AZ',f1(az))+SEP+
-    dg('GX', engine?f2(engine.gravity.x):'--')+SEP+
-    dg('GY', engine?f2(engine.gravity.y):'--')+SEP+
-    dg('BOLAS', balls.length)+SEP+
-    dg('COLA',  spawnQueue);
+    dg('DEV', IS_MOBILE?'MOB':'PC') + SEP +
+    dg('SNS', sensorOk?'✓':'✗')    + SEP +
+    (IS_MOBILE
+      ? dg('AX',f1(ax))+SEP+dg('AY',f1(ay))+SEP+dg('AZ',f1(az))+SEP
+      : '') +
+    dg('GX',f2(gx))+SEP+dg('GY',f2(gy))+SEP+
+    dg('BOLAS',balls.length)+SEP+
+    dg('COLA', spawnQueue);
   fpsEl.textContent = `FPS ${fps}`;
 }
 
 function tickFPS(){
-  _frameCount++;
-  const now = performance.now();
-  if (now - _lastFpsTime >= 1000){ fps=_frameCount; _frameCount=0; _lastFpsTime=now; }
+  _fc++;
+  const n=performance.now();
+  if(n-_ft>=1000){ fps=_fc; _fc=0; _ft=n; }
 }
 
-// ── Orientation / gravity ──────────────────────────────────────────────────
-function orientAngle(){
-  if (screen.orientation?.angle !== undefined) return ((screen.orientation.angle%360)+360)%360;
-  return ((+(window.orientation||0))%360+360)%360;
+// ═══════════════════════════════════════════════════════════════════
+// GRAVITY
+// Maps device accelerometer axes to screen-space gravity,
+// accounting for screen orientation angle.
+//
+// accelerationIncludingGravity gives the projection of g onto
+// each physical device axis. The screen may be rotated relative
+// to the device, so we remap:
+//
+//   angle=0   (portrait)      screen-x = +devX   screen-y = -devY
+//   angle=90  (land, home-L)  screen-x = +devY   screen-y = +devX
+//   angle=180 (portrait inv)  screen-x = -devX   screen-y = +devY
+//   angle=270 (land, home-R)  screen-x = -devY   screen-y = -devX
+//
+// Desktop: fixed gy=1 (phone held vertical).
+// ═══════════════════════════════════════════════════════════════════
+function screenAngle(){
+  const a = screen.orientation?.angle ?? window.orientation ?? 0;
+  return ((+a) % 360 + 360) % 360;
 }
 
-function gravity(){
-  if (IS_DESKTOP) return {gx:0, gy:1};
-  const G = 9.8, a = orientAngle();
-  if (a < 45 || a >= 315) return {gx:  ax/G, gy: -ay/G};
-  if (a < 135)            return {gx:  ay/G, gy:  ax/G};
-  if (a < 225)            return {gx: -ax/G, gy:  ay/G};
-  /* 225-314 */           return {gx: -ay/G, gy: -ax/G};
+function currentGravity(){
+  if (!IS_MOBILE) return {gx:0, gy:1};
+  const G = 9.8, ang = screenAngle();
+  if (ang < 45 || ang >= 315) return { gx:  ax/G, gy: -ay/G }; // portrait
+  if (ang < 135)              return { gx:  ay/G, gy:  ax/G }; // landscape home-left
+  if (ang < 225)              return { gx: -ax/G, gy:  ay/G }; // portrait inverted
+  /* 225-314 */               return { gx: -ay/G, gy: -ax/G }; // landscape home-right
 }
 
-// ── Browser helpers ────────────────────────────────────────────────────────
-function goFullscreen(){
-  const el = document.documentElement;
-  (el.requestFullscreen||el.webkitRequestFullscreen||function(){}).call(el,{navigationUI:'hide'});
-  setTimeout(()=>window.scrollTo(0,1), 100);
-}
-function lockLandscape(){
-  const sc = screen;
-  try{ sc.orientation?.lock('landscape'); }catch(e){}
-  (sc.lockOrientation||sc.mozLockOrientation||sc.msLockOrientation||function(){}).call(sc,'landscape');
-}
-
-// ── Wall + gap construction ────────────────────────────────────────────────
+// ═══════════════════════════════════════════════════════════════════
+// WALLS — top has spawn gap, sides have escape gaps, bottom is solid
+// Gaps are GAP_SIZE wide/tall, centred on each wall.
+// Escape: left and right gaps only.
+// Spawn:  top gap only (balls cannot escape through top).
+// ═══════════════════════════════════════════════════════════════════
 function buildWalls(){
-  const T = WALL;
-  const wo = {isStatic:true, restitution:RESTITUTION, friction:FRICTION, label:'wall'};
+  const T  = WALL_T;
+  const wo = { isStatic:true, restitution:RESTITUTION, friction:FRICTION };
+  const g  = GAP_SIZE;
 
-  const gTW = GAP_MIN;   // top gap width  (fixed, 10% larger than biggest ball)
-  const gSH = GAP_MIN;   // side gap height (same)
-  gaps = {
-    topL:  W/2 - gTW/2,   topR:  W/2 + gTW/2,
-    leftT: H/2 - gSH/2,   leftB: H/2 + gSH/2,
-    rightT:H/2 - gSH/2,   rightB:H/2 + gSH/2,
-  };
+  // Top gap (spawn entry): centred horizontally
+  const tL = W/2 - g/2;           // left edge of gap
+  const tR = W/2 + g/2;           // right edge of gap
+  const tLW = tL;                  // width of left top segment
+  const tRW = W - tR;              // width of right top segment
 
-  // Top: left segment [0 .. topL], right segment [topR .. W]
-  const tLW = gaps.topL;
-  const tRW = W - gaps.topR;
-  // Sides: top segment [0..leftT], bottom [leftB..H]
-  const sT = gaps.leftT;
-  const sB = H - gaps.leftB;
+  // Side gaps (escape): centred vertically
+  const sT = H/2 - g/2;           // top edge of side gap
+  const sB = H/2 + g/2;           // bottom edge of side gap
+  const sTH = sT;                  // height of upper side segment
+  const sBH = H - sB;             // height of lower side segment
+
+  gaps = { topL:tL, topR:tR, leftT:sT, leftB:sB, rightT:sT, rightB:sB };
 
   Composite.add(engine.world, [
-    Bodies.rectangle(W/2,                  H + T/2,          W+T*2, T,   wo), // bottom solid
-    Bodies.rectangle(tLW/2,                -T/2,             tLW,   T,   wo), // top-left
-    Bodies.rectangle(gaps.topR + tRW/2,    -T/2,             tRW,   T,   wo), // top-right
-    Bodies.rectangle(-T/2,                 sT/2,             T,     sT,  wo), // left-top
-    Bodies.rectangle(-T/2,  gaps.leftB + sB/2,               T,     sB,  wo), // left-bottom
-    Bodies.rectangle(W+T/2,                sT/2,             T,     sT,  wo), // right-top
-    Bodies.rectangle(W+T/2, gaps.leftB + sB/2,               T,     sB,  wo), // right-bottom
+    // Bottom — fully solid (balls bounce off)
+    Bodies.rectangle(W/2,        H+T/2,      W+T*2,  T,   wo),
+    // Top — two segments with spawn gap in centre
+    Bodies.rectangle(tL/2,       -T/2,       tLW,    T,   wo),
+    Bodies.rectangle(tR+tRW/2,   -T/2,       tRW,    T,   wo),
+    // Left — two segments with escape gap in centre
+    Bodies.rectangle(-T/2,       sTH/2,      T,      sTH, wo),
+    Bodies.rectangle(-T/2,       sB+sBH/2,   T,      sBH, wo),
+    // Right — two segments with escape gap in centre
+    Bodies.rectangle(W+T/2,      sTH/2,      T,      sTH, wo),
+    Bodies.rectangle(W+T/2,      sB+sBH/2,   T,      sBH, wo),
   ]);
 }
 
-// ── Ball factory ────────────────────────────────────────────────────────────
-// Palette of soft tints — saturated enough to notice, pale enough to keep the glass look
-const BALL_TINTS = [
-  [1.00, 0.35, 0.35], // coral red
-  [1.00, 0.60, 0.20], // amber
-  [1.00, 0.90, 0.25], // yellow
-  [0.40, 0.90, 0.40], // lime green
-  [0.25, 0.80, 0.75], // teal
-  [0.30, 0.65, 1.00], // sky blue
-  [0.55, 0.35, 1.00], // violet
-  [1.00, 0.35, 0.80], // pink
-  [0.90, 0.55, 0.30], // orange
-  [0.35, 1.00, 0.60], // mint
-];
-let tintIndex = 0;
-
+// ═══════════════════════════════════════════════════════════════════
+// BALL FACTORY
+// ═══════════════════════════════════════════════════════════════════
 function makeBall(bx, by, radius){
-  const rn = (radius-RADIUS_MIN)/(RADIUS_MAX-RADIUS_MIN);
+  const rn   = (radius-RADIUS_MIN)/(RADIUS_MAX-RADIUS_MIN);
   const body = Bodies.circle(bx, by, radius, {
     restitution: RESTITUTION - rn*0.08,
     friction: FRICTION, frictionAir: FRICTION_AIR, density: 0.002,
   });
   Composite.add(engine.world, body);
-  const tint = BALL_TINTS[tintIndex % BALL_TINTS.length];
-  tintIndex++;
-  return {body, radius, tint};
+  const tint = TINTS[tintIdx++ % TINTS.length];
+  return { body, radius, tint };
 }
 
-// ── Spawn queue ────────────────────────────────────────────────────────────
-function gapClear(radius){
-  const cx = (gaps.topL + gaps.topR) / 2;
-  const clearY = radius * 4;
-  for (const {body, radius:br} of balls){
-    if (body.position.y < clearY &&
-        Math.abs(body.position.x - cx) < (gaps.topR-gaps.topL)/2 + br)
+// ═══════════════════════════════════════════════════════════════════
+// SPAWN — balls enter through the top gap only
+// Rules:
+//   1. Respect SPAWN_DELAY between spawns.
+//   2. Check no existing ball is too close to the spawn point.
+//   3. Spawn just above the screen (y = -radius-2).
+// ═══════════════════════════════════════════════════════════════════
+function spawnZoneClear(radius){
+  if (!gaps) return false;
+  const cx     = W/2;
+  const clearY = radius * 5; // vertical clearance below gap
+  for (const {body:b, radius:br} of balls){
+    if (b.position.y < clearY &&
+        Math.abs(b.position.x - cx) < GAP_SIZE/2 + br)
       return false;
   }
   return true;
@@ -195,159 +239,207 @@ function trySpawn(){
   const now = performance.now();
   if (now - lastSpawnMs < SPAWN_DELAY) return;
   const radius = RADIUS_MIN + Math.random()*(RADIUS_MAX-RADIUS_MIN);
-  if (!gapClear(radius)) return;
-  const cx    = (gaps.topL + gaps.topR) / 2;
-  const halfW = (gaps.topR - gaps.topL)/2 - radius - 2;
-  const bx    = cx + (Math.random()-0.5)*2*Math.max(0, halfW);
-  const entry = makeBall(bx, -radius-2, radius);
-  Body.setVelocity(entry.body, {x:(Math.random()-0.5)*1.5, y:0.5});
+  if (!spawnZoneClear(radius)) return;
+  const margin = GAP_SIZE/2 - radius - 2;
+  const bx     = W/2 + (Math.random()-0.5)*2*Math.max(0,margin);
+  const entry  = makeBall(bx, -radius-2, radius);
+  // Small random horizontal nudge so balls don't stack perfectly
+  Body.setVelocity(entry.body, { x:(Math.random()-0.5)*2, y:0.5 });
   balls.push(entry);
   spawnQueue--;
   lastSpawnMs = now;
 }
 
-// ── Escape detection ────────────────────────────────────────────────────────
+// ═══════════════════════════════════════════════════════════════════
+// ESCAPE — balls disappear through left/right gaps (not top, not bottom)
+// We also cull anything that has drifted very far outside (physics glitch).
+// ═══════════════════════════════════════════════════════════════════
 function checkEscapes(){
-  const margin = RADIUS_MAX * 2;
+  const far = RADIUS_MAX * 3;
   for (let i = balls.length-1; i >= 0; i--){
     const {x,y} = balls[i].body.position;
-    if (x < -margin || x > W+margin || y < -margin){
+    const escaped =
+      x < -far ||          // far left
+      x > W+far ||         // far right
+      y < -far ||          // far above (shouldn't happen but safety net)
+      y > H+far;           // far below (also safety)
+    if (escaped){
       if (drag?.entry === balls[i]) drag = null;
       Composite.remove(engine.world, balls[i].body);
-      balls.splice(i,1);
+      balls.splice(i, 1);
       spawnQueue++;
     }
   }
 }
 
-// ── WebGL ──────────────────────────────────────────────────────────────────
+// ═══════════════════════════════════════════════════════════════════
+// WEBGL — background grid + per-ball sphere refraction + colour tint
+// ═══════════════════════════════════════════════════════════════════
 function initGL(){
   const canvas = document.getElementById('gl');
   canvas.width=W; canvas.height=H;
   const g = canvas.getContext('webgl',{alpha:false}) ||
             canvas.getContext('experimental-webgl',{alpha:false});
-  if (!g){ console.warn('No WebGL'); return null; }
+  if (!g){ console.warn('WebGL unavailable'); return null; }
 
-  const bgVS=`attribute vec2 aPos;varying vec2 vUv;void main(){vUv=aPos*.5+.5;gl_Position=vec4(aPos,0.,1.);}`;
-  const bgFS=`precision mediump float;varying vec2 vUv;uniform vec2 uRes;
-    float grid(vec2 p){float s=34.,w=.65;vec2 g=mod(p,s);return max(smoothstep(w+1.,w,abs(g.y)),smoothstep(w+1.,w,abs(g.x)));}
-    void main(){vec2 p=vUv*uRes;p.y=uRes.y-p.y;vec3 d=vec3(.04,.04,.072),l=vec3(.155,.195,.27);gl_FragColor=vec4(mix(d,l,grid(p)),1.);}`;
+  // ── Background: line grid ────────────────────────────────────────
+  const bgVS = `attribute vec2 p;varying vec2 uv;void main(){uv=p*.5+.5;gl_Position=vec4(p,0.,1.);}`;
+  const bgFS = `precision mediump float;
+    varying vec2 uv;uniform vec2 res;
+    float grid(vec2 q){float s=34.,w=.7;vec2 g=mod(q,s);return max(smoothstep(w+1.,w,abs(g.y)),smoothstep(w+1.,w,abs(g.x)));}
+    void main(){vec2 q=uv*res;q.y=res.y-q.y;gl_FragColor=vec4(mix(vec3(.04,.04,.072),vec3(.155,.195,.27),grid(q)),1.);}`;
 
-  const bVS=`attribute vec2 aPos;varying vec2 vPx;uniform vec2 uRes;
-    void main(){vPx=(aPos*.5+.5)*uRes;vPx.y=uRes.y-vPx.y;gl_Position=vec4(aPos,0.,1.);}`;
-  const bFS=`precision highp float;
-    varying vec2 vPx;uniform vec2 uRes,uBall;uniform float uR,uDrag;uniform vec3 uTint;
-    float grid(vec2 p){float s=34.,w=.65;vec2 g=mod(p,s);return max(smoothstep(w+1.,w,abs(g.y)),smoothstep(w+1.,w,abs(g.x)));}
-    vec3 bg(vec2 p){return mix(vec3(.04,.04,.072),vec3(.155,.195,.27),grid(p));}
+  // ── Ball: sphere refraction + colour tint + halo ─────────────────
+  const bVS = `attribute vec2 p;varying vec2 vp;uniform vec2 res;
+    void main(){vp=(p*.5+.5)*res;vp.y=res.y-vp.y;gl_Position=vec4(p,0.,1.);}`;
+  const bFS = `precision highp float;
+    varying vec2 vp;
+    uniform vec2  res, bc;   // resolution, ball centre
+    uniform float br, drag;  // ball radius, drag flag
+    uniform vec3  tint;      // ball colour tint
+
+    float grid(vec2 q){float s=34.,w=.7;vec2 g=mod(q,s);return max(smoothstep(w+1.,w,abs(g.y)),smoothstep(w+1.,w,abs(g.x)));}
+    vec3 bgAt(vec2 q){return mix(vec3(.04,.04,.072),vec3(.155,.195,.27),grid(q));}
+
     void main(){
-      vec2 d=vPx-uBall;float dist=length(d),r=uR,hw=r*.4,or2=r+hw;
-      if(dist>or2){gl_FragColor=vec4(0.);return;}
-      if(dist>r){
-        float t=(dist-r)/hw;
-        float h=exp(-t*t*4.5)*(0.42+uDrag*.35);
-        // Halo tinted with ball colour
-        vec3 hc=mix(uTint*0.85+vec3(0.15), vec3(1.,.85,.3), uDrag);
-        gl_FragColor=vec4(hc*h,h);return;
+      vec2  d    = vp - bc;
+      float dist = length(d);
+      float hw   = br * .40;
+
+      // Outside halo zone → fully transparent
+      if(dist > br+hw){ gl_FragColor=vec4(0.); return; }
+
+      // Halo ring
+      if(dist > br){
+        float t = (dist-br)/hw;
+        float h = exp(-t*t*4.5)*(0.40+drag*.40);
+        vec3  c = mix(tint*.85+vec3(.15), vec3(1.,.85,.3), drag);
+        gl_FragColor = vec4(c*h, h);
+        return;
       }
-      float nd=dist/r,nz=sqrt(max(0.,1.-nd*nd));
-      vec3 N=normalize(vec3(d/r,nz));
-      float eta=1./1.55,ci=nz,s2t=eta*eta*(1.-ci*ci);
-      vec2 off;
-      if(s2t>1.){vec3 rf=vec3(0.,0.,-1.)-2.*dot(vec3(0.,0.,-1.),N)*N;off=rf.xy*r*1.5;}
-      else{float ct=sqrt(1.-s2t);vec3 rv=eta*vec3(0.,0.,-1.)+(eta*ci-ct)*N;off=rv.xy*(-1.5*r/rv.z);}
-      vec2 sp=clamp(uBall+off,vec2(0.),uRes);
-      vec3 col=bg(vec2(sp.x,uRes.y-sp.y));
-      // Tint: stronger near the edge (like coloured glass), subtle at centre
-      float tintStr = 0.18 + 0.22*(1.0-nz);
-      col = mix(col, col*uTint*1.4, tintStr);
-      // Faint interior ambient matching the tint
-      col+=uTint*.04*(.3+.7*(1.-nz));
-      // Speculars (white, so they override the tint naturally)
-      vec2 s1=d-vec2(-r*.36,-r*.36);col+=exp(-dot(s1,s1)/(2.*(r*.19)*(r*.19)))*.20;
-      vec2 s2=d+vec2(r*.2,r*.26);  col+=exp(-dot(s2,s2)/(2.*(r*.048)*(r*.048)))*.45;
-      float e=smoothstep(1.,.9,nd);
-      gl_FragColor=vec4(mix(bg(vPx),col,e),e);
+
+      // Inside ball — Snell's law sphere refraction (n=1.55)
+      float nd  = dist/br;
+      float nz  = sqrt(max(0., 1.-nd*nd));
+      vec3  N   = normalize(vec3(d/br, nz));
+      vec3  I   = vec3(0.,0.,-1.);
+      float eta = 1./1.55, ci = nz;
+      float s2t = eta*eta*(1.-ci*ci);
+      vec2  off;
+      if(s2t > 1.0){
+        // Total internal reflection
+        vec3 rf = I - 2.*dot(I,N)*N;
+        off = rf.xy * br * 1.5;
+      } else {
+        float ct = sqrt(1.-s2t);
+        vec3  rv = eta*I + (eta*ci-ct)*N;
+        off = rv.xy * (-1.5*br / rv.z);
+      }
+      vec2 sp  = clamp(bc+off, vec2(0.), res);
+      vec3 col = bgAt(vec2(sp.x, res.y-sp.y));
+
+      // Colour tint — stronger near edge (like coloured glass)
+      float ts = .18 + .22*(1.-nz);
+      col = mix(col, col*tint*1.4, ts);
+      col += tint*.04*(.3+.7*(1.-nz));
+
+      // Speculars (white)
+      vec2 s1 = d-vec2(-br*.36,-br*.36); col += exp(-dot(s1,s1)/(2.*(br*.19)*(br*.19)))*.20;
+      vec2 s2 = d+vec2( br*.20, br*.26); col += exp(-dot(s2,s2)/(2.*(br*.048)*(br*.048)))*.45;
+
+      float e = smoothstep(1.,.90,nd);
+      gl_FragColor = vec4(mix(bgAt(vp),col,e), e);
     }`;
 
-  function sh(type,src){
-    const s=g.createShader(type);g.shaderSource(s,src);g.compileShader(s);
-    if(!g.getShaderParameter(s,g.COMPILE_STATUS)){console.error('Shader:',g.getShaderInfoLog(s));return null;}
+  function mkShader(type,src){
+    const s=g.createShader(type); g.shaderSource(s,src); g.compileShader(s);
+    if(!g.getShaderParameter(s,g.COMPILE_STATUS)){ console.error(g.getShaderInfoLog(s)); return null; }
     return s;
   }
-  function prog(vs,fs){
+  function mkProg(vs,fs){
     const p=g.createProgram();
-    g.attachShader(p,sh(g.VERTEX_SHADER,vs));
-    g.attachShader(p,sh(g.FRAGMENT_SHADER,fs));
+    g.attachShader(p,mkShader(g.VERTEX_SHADER,vs));
+    g.attachShader(p,mkShader(g.FRAGMENT_SHADER,fs));
     g.linkProgram(p);
-    if(!g.getProgramParameter(p,g.LINK_STATUS)){console.error('Program:',g.getProgramInfoLog(p));return null;}
+    if(!g.getProgramParameter(p,g.LINK_STATUS)){ console.error(g.getProgramInfoLog(p)); return null; }
     return p;
   }
 
-  const bgP=prog(bgVS,bgFS), bP=prog(bVS,bFS);
-  const fsqB=g.createBuffer();
-  g.bindBuffer(g.ARRAY_BUFFER,fsqB);
+  const bgP=mkProg(bgVS,bgFS), bP=mkProg(bVS,bFS);
+
+  const fsqBuf=g.createBuffer();
+  g.bindBuffer(g.ARRAY_BUFFER,fsqBuf);
   g.bufferData(g.ARRAY_BUFFER,new Float32Array([-1,-1,1,-1,-1,1,1,1]),g.STATIC_DRAW);
-  const bB=g.createBuffer();
+  const ballBuf=g.createBuffer();
 
   return {
-    g, bgP, bP, fsqB, bB,
-    bgA: g.getAttribLocation(bgP,'aPos'),
-    bgR: g.getUniformLocation(bgP,'uRes'),
-    bA:  g.getAttribLocation(bP,'aPos'),
-    bR:  g.getUniformLocation(bP,'uRes'),
-    bC:  g.getUniformLocation(bP,'uBall'),
-    bRad:g.getUniformLocation(bP,'uR'),
-    bDrg:g.getUniformLocation(bP,'uDrag'),
-    bTnt:g.getUniformLocation(bP,'uTint'),
+    g, bgP, bP, fsqBuf, ballBuf,
+    bgP_p:  g.getAttribLocation(bgP,'p'),
+    bgP_res:g.getUniformLocation(bgP,'res'),
+    bP_p:   g.getAttribLocation(bP,'p'),
+    bP_res: g.getUniformLocation(bP,'res'),
+    bP_bc:  g.getUniformLocation(bP,'bc'),
+    bP_br:  g.getUniformLocation(bP,'br'),
+    bP_drg: g.getUniformLocation(bP,'drag'),
+    bP_tnt: g.getUniformLocation(bP,'tint'),
   };
 }
 
 function renderGL(){
-  if (!glState) return;
-  const {g,bgP,bP,fsqB,bB,bgA,bgR,bA,bR,bC,bRad,bDrg,bTnt}=glState;
+  if(!glState) return;
+  const {g,bgP,bP,fsqBuf,ballBuf,bgP_p,bgP_res,bP_p,bP_res,bP_bc,bP_br,bP_drg,bP_tnt}=glState;
   g.viewport(0,0,W,H);
 
-  // Pass A: background
+  // Pass A — background grid (full screen quad, no blend)
   g.disable(g.BLEND);
   g.useProgram(bgP);
-  g.bindBuffer(g.ARRAY_BUFFER,fsqB);
-  g.enableVertexAttribArray(bgA); g.vertexAttribPointer(bgA,2,g.FLOAT,false,0,0);
-  g.uniform2f(bgR,W,H);
+  g.bindBuffer(g.ARRAY_BUFFER,fsqBuf);
+  g.enableVertexAttribArray(bgP_p); g.vertexAttribPointer(bgP_p,2,g.FLOAT,false,0,0);
+  g.uniform2f(bgP_res,W,H);
   g.drawArrays(g.TRIANGLE_STRIP,0,4);
 
-  // Pass B: each ball (sorted largest first)
+  // Pass B — each ball on a tight quad, alpha blended
   g.enable(g.BLEND); g.blendFunc(g.SRC_ALPHA,g.ONE_MINUS_SRC_ALPHA);
-  g.useProgram(bP); g.uniform2f(bR,W,H);
+  g.useProgram(bP); g.uniform2f(bP_res,W,H);
+
+  // Largest balls first so smaller ones render on top
   const sorted=[...balls].sort((a,b)=>b.radius-a.radius);
-  for (const entry of sorted){
-    const {body:{position:{x:cx,y:cy}},radius}=entry;
-    const e=radius*1.45;
-    const verts=new Float32Array([
-      (cx-e)/W*2-1, 1-(cy+e)/H*2,
-      (cx+e)/W*2-1, 1-(cy+e)/H*2,
-      (cx-e)/W*2-1, 1-(cy-e)/H*2,
-      (cx+e)/W*2-1, 1-(cy-e)/H*2,
-    ]);
-    g.bindBuffer(g.ARRAY_BUFFER,bB); g.bufferData(g.ARRAY_BUFFER,verts,g.DYNAMIC_DRAW);
-    g.enableVertexAttribArray(bA); g.vertexAttribPointer(bA,2,g.FLOAT,false,0,0);
-    g.uniform2f(bC,cx,cy); g.uniform1f(bRad,radius);
-    g.uniform1f(bDrg, drag?.entry===entry ? 1.0 : 0.0);
-    const t = entry.tint || [0.7,0.88,1.0];
-    g.uniform3f(bTnt, t[0], t[1], t[2]);
+  for(const entry of sorted){
+    const cx=entry.body.position.x, cy=entry.body.position.y, r=entry.radius;
+    const ext=r*1.45;
+    const x0=(cx-ext)/W*2-1, x1=(cx+ext)/W*2-1;
+    const y0=1-(cy+ext)/H*2, y1=1-(cy-ext)/H*2;
+    const verts=new Float32Array([x0,y1, x1,y1, x0,y0, x1,y0]);
+    g.bindBuffer(g.ARRAY_BUFFER,ballBuf);
+    g.bufferData(g.ARRAY_BUFFER,verts,g.DYNAMIC_DRAW);
+    g.enableVertexAttribArray(bP_p); g.vertexAttribPointer(bP_p,2,g.FLOAT,false,0,0);
+    g.uniform2f(bP_bc,cx,cy);
+    g.uniform1f(bP_br,r);
+    g.uniform1f(bP_drg, drag?.entry===entry ? 1.0 : 0.0);
+    const t=entry.tint||[0.7,0.88,1.0];
+    g.uniform3f(bP_tnt,t[0],t[1],t[2]);
     g.drawArrays(g.TRIANGLE_STRIP,0,4);
   }
 }
 
-// ── 2D gap visuals ──────────────────────────────────────────────────────────
-function drawGaps(c){
-  if (!gaps) return;
-  const pulse = 0.55 + 0.45*Math.sin(performance.now()*0.003);
-  const a = 0.28 + 0.30*pulse;
-  c.strokeStyle = `rgba(0,255,120,${a})`;
-  c.fillStyle   = `rgba(0,255,120,${a})`;
-  c.lineWidth   = 2;
+// ═══════════════════════════════════════════════════════════════════
+// 2D OVERLAY — gap indicators + trails + corner brackets
+// ═══════════════════════════════════════════════════════════════════
+function drawOverlay(){
+  const c=ctx2d;
+  c.clearRect(0,0,W,H);
+  if(!gaps) return;
 
-  function bracket(x0,y0,x1,y1){ c.beginPath();c.moveTo(x0,y0);c.lineTo(x1,y1);c.stroke(); }
+  const pulse = 0.55+0.45*Math.sin(performance.now()*.003);
+  const a     = 0.25+0.32*pulse;
+
+  c.strokeStyle=`rgba(0,255,120,${a})`;
+  c.fillStyle  =`rgba(0,255,120,${a})`;
+  c.lineWidth  = 2;
+
+  // Helper: bracket marks + line covering the gap opening
+  function gapLine(x0,y0,x1,y1){ c.beginPath();c.moveTo(x0,y0);c.lineTo(x1,y1);c.stroke(); }
+  // Arrow pointing inward
   function arrow(ox,oy,dx,dy,len){
     const ex=ox+dx*len,ey=oy+dy*len;
     c.beginPath();c.moveTo(ox,oy);c.lineTo(ex,ey);c.stroke();
@@ -358,95 +450,105 @@ function drawGaps(c){
     c.closePath();c.fill();
   }
 
-  // Top gap
-  const tCX=(gaps.topL+gaps.topR)/2;
-  bracket(gaps.topL,0,gaps.topL,10); bracket(gaps.topR,0,gaps.topR,10);
-  bracket(gaps.topL,0,gaps.topR,0);
-  arrow(tCX,0,0,1,16);
-  c.globalAlpha=a*0.9; c.font='9px Courier New'; c.textAlign='center';
-  c.fillText('SPAWN',tCX,22); c.textAlign='left'; c.globalAlpha=1;
+  // ── Top gap (SPAWN) ───────────────────────────────────────────────
+  gapLine(gaps.topL,0,gaps.topL,12);  // left tick
+  gapLine(gaps.topR,0,gaps.topR,12);  // right tick
+  gapLine(gaps.topL,0,gaps.topR,0);   // horizontal line across gap
+  arrow(W/2,0,0,1,18);
+  c.globalAlpha=a; c.font='9px Courier New'; c.textAlign='center';
+  c.fillText('SPAWN',W/2,26); c.textAlign='left'; c.globalAlpha=1;
 
-  // Left gap
-  const lCY=(gaps.leftT+gaps.leftB)/2;
-  bracket(0,gaps.leftT,10,gaps.leftT); bracket(0,gaps.leftB,10,gaps.leftB);
-  bracket(0,gaps.leftT,0,gaps.leftB);
-  arrow(0,lCY,1,0,16);
+  // ── Left gap (ESCAPE) ─────────────────────────────────────────────
+  gapLine(0,gaps.leftT,12,gaps.leftT);
+  gapLine(0,gaps.leftB,12,gaps.leftB);
+  gapLine(0,gaps.leftT,0,gaps.leftB);
+  arrow(0,H/2,1,0,18);
 
-  // Right gap
-  const rCY=(gaps.rightT+gaps.rightB)/2;
-  bracket(W,gaps.rightT,W-10,gaps.rightT); bracket(W,gaps.rightB,W-10,gaps.rightB);
-  bracket(W,gaps.rightT,W,gaps.rightB);
-  arrow(W,rCY,-1,0,16);
+  // ── Right gap (ESCAPE) ────────────────────────────────────────────
+  gapLine(W,gaps.rightT,W-12,gaps.rightT);
+  gapLine(W,gaps.rightB,W-12,gaps.rightB);
+  gapLine(W,gaps.rightT,W,gaps.rightB);
+  arrow(W,H/2,-1,0,18);
+
+  // ── Corner brackets ────────────────────────────────────────────────
+  c.strokeStyle='rgba(0,255,120,0.10)'; c.lineWidth=1;
+  [[0,0],[W,0],[0,H],[W,H]].forEach(([cx,cy])=>{
+    const sx=cx?-1:1,sy=cy?-1:1;
+    c.beginPath();c.moveTo(cx+sx*20,cy);c.lineTo(cx,cy);c.lineTo(cx,cy+sy*20);c.stroke();
+  });
+
+  // ── Trails ─────────────────────────────────────────────────────────
+  for(const {body,radius} of balls){
+    const spd=Math.hypot(body.velocity.x,body.velocity.y);
+    if(spd>1.5){
+      const nx=-body.velocity.x/spd, ny=-body.velocity.y/spd;
+      const tl=Math.min(spd*3.5,70);
+      const tg=c.createLinearGradient(body.position.x,body.position.y,body.position.x+nx*tl,body.position.y+ny*tl);
+      tg.addColorStop(0,'rgba(200,220,255,0.14)'); tg.addColorStop(1,'rgba(200,220,255,0)');
+      c.beginPath();
+      c.moveTo(body.position.x+nx*radius*.85,body.position.y+ny*radius*.85);
+      c.lineTo(body.position.x+nx*tl,body.position.y+ny*tl);
+      c.lineWidth=radius*.55; c.lineCap='round'; c.strokeStyle=tg; c.stroke();
+    }
+  }
 }
 
-// ── Main loop ───────────────────────────────────────────────────────────────
-function drawLoop(){
-  drawLoopId = requestAnimationFrame(drawLoop);
+// ═══════════════════════════════════════════════════════════════════
+// MAIN LOOP
+// ═══════════════════════════════════════════════════════════════════
+function mainLoop(){
+  drawLoopId = requestAnimationFrame(mainLoop);
   tickFPS();
 
-  // Apply gravity
-  const {gx,gy}=gravity();
+  // Gravity
+  const {gx,gy}=currentGravity();
   engine.gravity.x=gx; engine.gravity.y=gy;
 
-  // Drag
-  if (drag){
-    Body.setVelocity(drag.entry.body,{x:mVX*.6,y:mVY*.6});
-    Body.setPosition(drag.entry.body,{
-      x: drag.entry.body.position.x+(mX-drag.entry.body.position.x)*.35,
-      y: drag.entry.body.position.y+(mY-drag.entry.body.position.y)*.35,
+  // Drag: smoothly pull the dragged ball toward the pointer
+  if(drag){
+    const b=drag.entry.body;
+    Body.setVelocity(b,{x:mVX*.6,y:mVY*.6});
+    Body.setPosition(b,{
+      x:b.position.x+(mX-b.position.x)*.35,
+      y:b.position.y+(mY-b.position.y)*.35,
     });
   }
 
-  // Escape + spawn
+  // Escape detection (every ESCAPE_MS)
   const now=performance.now();
-  if (now-lastEscapeMs > 150){ checkEscapes(); lastEscapeMs=now; }
+  if(now-lastEscapeMs>ESCAPE_MS){ checkEscapes(); lastEscapeMs=now; }
+
+  // Spawn queued balls
   trySpawn();
 
-  // Render
   renderGL();
-  const c=ctx2d;
-  c.clearRect(0,0,W,H);
-  drawGaps(c);
-
-  // Corner brackets
-  c.strokeStyle='rgba(0,255,120,0.11)'; c.lineWidth=1;
-  [[0,0],[W,0],[0,H],[W,H]].forEach(([cx,cy])=>{
-    const sx=cx?-1:1,sy=cy?-1:1;
-    c.beginPath();c.moveTo(cx+sx*22,cy);c.lineTo(cx,cy);c.lineTo(cx,cy+sy*22);c.stroke();
-  });
-
-  // Trails
-  for (const {body,radius} of balls){
-    const spd=Math.hypot(body.velocity.x,body.velocity.y);
-    if (spd>1.5){
-      const nx=-body.velocity.x/spd,ny=-body.velocity.y/spd,tl=Math.min(spd*3.5,70);
-      const tg=c.createLinearGradient(body.position.x,body.position.y,body.position.x+nx*tl,body.position.y+ny*tl);
-      tg.addColorStop(0,'rgba(180,220,255,0.15)'); tg.addColorStop(1,'rgba(180,220,255,0)');
-      c.beginPath();c.moveTo(body.position.x+nx*radius*.85,body.position.y+ny*radius*.85);
-      c.lineTo(body.position.x+nx*tl,body.position.y+ny*tl);
-      c.lineWidth=radius*.6;c.lineCap='round';c.strokeStyle=tg;c.stroke();
-    }
-  }
-
+  drawOverlay();
   updateDebug();
 }
 
-// ── Build world ─────────────────────────────────────────────────────────────
+// ═══════════════════════════════════════════════════════════════════
+// BUILD WORLD — called on init and on every resize
+// ═══════════════════════════════════════════════════════════════════
 function buildWorld(){
-  if (runner){ Runner.stop(runner); runner=null; }
-  if (drawLoopId){ cancelAnimationFrame(drawLoopId); drawLoopId=null; }
-  drag=null; balls=[];
+  // Stop any running simulation
+  if(runner){  Runner.stop(runner); runner=null; }
+  if(drawLoopId){ cancelAnimationFrame(drawLoopId); drawLoopId=null; }
+  // Keep drag state so a finger doesn't lose its ball on orientation change
+  // but reset it if the dragged body will be destroyed anyway
+  drag=null;
+  balls=[];
 
   W=window.innerWidth; H=window.innerHeight;
 
-  document.getElementById('c2d').width=W;
-  document.getElementById('c2d').height=H;
-  ctx2d=document.getElementById('c2d').getContext('2d');
-
-  document.getElementById('gl').width=W;
-  document.getElementById('gl').height=H;
+  // Resize canvases
+  const glC  =document.getElementById('gl');
+  const c2dC =document.getElementById('c2d');
+  glC.width=W;  glC.height=H;
+  c2dC.width=W; c2dC.height=H;
+  ctx2d=c2dC.getContext('2d');
   glState=initGL();
 
+  // Physics engine
   engine=Engine.create({gravity:{x:0,y:0,scale:0.001}});
   engine.positionIterations=10;
   engine.velocityIterations=8;
@@ -454,94 +556,124 @@ function buildWorld(){
 
   buildWalls();
 
-  // Queue NUM_BALLS to spawn through the top gap
+  // Queue all balls to spawn via the top gap
   spawnQueue=NUM_BALLS;
   lastSpawnMs=0;
   lastEscapeMs=0;
 
   runner=Runner.create();
   Runner.run(runner,engine);
-  drawLoop();
+  mainLoop();
 }
 
-// ── Drag: mouse + touch (always active) ────────────────────────────────────
-function setupDrag(){
-  const el = document.getElementById('c2d');
+// ═══════════════════════════════════════════════════════════════════
+// DRAG — unified mouse + touch, registered once on document
+// We use document instead of the canvas so events aren't lost when
+// the canvas is resized/recreated in buildWorld.
+// ═══════════════════════════════════════════════════════════════════
+function getEventPos(e){
+  // Returns {x,y} in CSS pixels relative to viewport (= page coords here)
+  const src = e.changedTouches ? e.changedTouches[0] : e;
+  return { x: src.clientX, y: src.clientY };
+}
 
-  function clientPos(e){
-    // Touch or mouse
-    const src = e.changedTouches ? e.changedTouches[0] : e;
-    const r   = el.getBoundingClientRect();
-    return { x: src.clientX - r.left, y: src.clientY - r.top };
-  }
-
-  function startDrag(e){
-    const {x,y} = clientPos(e);
-    mVX=0; mVY=0; mX=x; mY=y;
-    // Pick smallest ball under finger/cursor (visually on top)
-    for (const entry of [...balls].sort((a,b)=>a.radius-b.radius)){
-      const dx=entry.body.position.x-x, dy=entry.body.position.y-y;
-      // Slightly larger hit area on touch
-      const hitR = entry.radius * (e.changedTouches ? 1.4 : 1.0);
-      if (Math.hypot(dx,dy) <= hitR){
-        drag={entry}; Body.setStatic(entry.body,true);
-        e.preventDefault(); break;
-      }
+function onPointerDown(e){
+  // Ignore if already dragging (single-touch only for simplicity)
+  if(drag) return;
+  const {x,y}=getEventPos(e);
+  mVX=0; mVY=0; mX=x; mY=y;
+  // Hit test: pick the topmost (smallest radius) ball under the pointer
+  const hitBonus = e.changedTouches ? 1.4 : 1.0; // larger hit area on touch
+  for(const entry of [...balls].sort((a,b)=>a.radius-b.radius)){
+    const dx=entry.body.position.x-x, dy=entry.body.position.y-y;
+    if(Math.hypot(dx,dy) <= entry.radius*hitBonus){
+      drag={entry};
+      Body.setStatic(entry.body,true);
+      e.preventDefault();
+      return;
     }
   }
-
-  function moveDrag(e){
-    if (!drag) return;
-    e.preventDefault();
-    const {x,y}=clientPos(e);
-    mVX=x-mX; mVY=y-mY; mX=x; mY=y;
-  }
-
-  function endDrag(e){
-    if (!drag) return;
-    e.preventDefault();
-    Body.setStatic(drag.entry.body, false);
-    Body.setVelocity(drag.entry.body, {x:mVX*1.2, y:mVY*1.2});
-    drag=null;
-  }
-
-  // Mouse
-  el.addEventListener('mousedown',  startDrag);
-  el.addEventListener('mousemove',  moveDrag);
-  el.addEventListener('mouseup',    endDrag);
-  el.addEventListener('mouseleave', endDrag);
-
-  // Touch
-  el.addEventListener('touchstart',  startDrag, {passive:false});
-  el.addEventListener('touchmove',   moveDrag,  {passive:false});
-  el.addEventListener('touchend',    endDrag,   {passive:false});
-  el.addEventListener('touchcancel', endDrag,   {passive:false});
 }
 
-// ── Sensor ──────────────────────────────────────────────────────────────────
+function onPointerMove(e){
+  const {x,y}=getEventPos(e);
+  mVX=x-mX; mVY=y-mY; mX=x; mY=y;
+  if(drag) e.preventDefault();
+}
+
+function onPointerUp(e){
+  if(!drag) return;
+  e.preventDefault();
+  Body.setStatic(drag.entry.body,false);
+  Body.setVelocity(drag.entry.body,{x:mVX*1.2,y:mVY*1.2});
+  drag=null;
+}
+
+function setupDrag(){
+  // Mouse
+  document.addEventListener('mousedown',  onPointerDown);
+  document.addEventListener('mousemove',  onPointerMove);
+  document.addEventListener('mouseup',    onPointerUp);
+  // Touch
+  document.addEventListener('touchstart',  onPointerDown, {passive:false});
+  document.addEventListener('touchmove',   onPointerMove,  {passive:false});
+  document.addEventListener('touchend',    onPointerUp,    {passive:false});
+  document.addEventListener('touchcancel', onPointerUp,    {passive:false});
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// ACCELEROMETER — mobile only
+// On iOS 13+ DeviceMotionEvent.requestPermission() must be called
+// from a user gesture. We call it on the first touch on the page.
+// On Android and most other browsers it fires without permission.
+// ═══════════════════════════════════════════════════════════════════
 function startSensor(){
-  if (IS_DESKTOP){ sensorOk=true; return; }
-  function onM(e){
+  if(!IS_MOBILE){ sensorOk=true; return; } // desktop: gravity is fixed
+  if(sensorListening) return;
+
+  function onMotion(e){
     const a=e.accelerationIncludingGravity; if(!a) return;
-    ax+=SENSOR_ALPHA*((a.x||0)-ax);
-    ay+=SENSOR_ALPHA*((a.y||0)-ay);
-    az+=SENSOR_ALPHA*((a.z||0)-az);
+    ax+=ACCEL_ALPHA*((a.x||0)-ax);
+    ay+=ACCEL_ALPHA*((a.y||0)-ay);
+    az+=ACCEL_ALPHA*((a.z||0)-az);
     sensorOk=true;
   }
-  if (typeof DeviceMotionEvent!=='undefined' && typeof DeviceMotionEvent.requestPermission==='function'){
-    DeviceMotionEvent.requestPermission().then(s=>{ if(s==='granted') window.addEventListener('devicemotion',onM); }).catch(()=>{});
-  } else if (typeof DeviceMotionEvent!=='undefined'){
-    window.addEventListener('devicemotion',onM);
+
+  if(typeof DeviceMotionEvent!=='undefined' &&
+     typeof DeviceMotionEvent.requestPermission==='function'){
+    // iOS 13+ — needs a user gesture; we try here (page already loaded)
+    // and also set up a one-shot touch handler as fallback.
+    const tryPerm = ()=>{
+      DeviceMotionEvent.requestPermission()
+        .then(state=>{ if(state==='granted'){ window.addEventListener('devicemotion',onMotion); sensorListening=true; } })
+        .catch(()=>{});
+    };
+    tryPerm();
+    // One-shot fallback: if tryPerm failed (no gesture yet), retry on first touch
+    const touchFallback = ()=>{ tryPerm(); document.removeEventListener('touchstart',touchFallback); };
+    document.addEventListener('touchstart', touchFallback, {once:true});
+  } else if(typeof DeviceMotionEvent!=='undefined'){
+    window.addEventListener('devicemotion',onMotion);
+    sensorListening=true;
   }
 }
 
-window.addEventListener('resize', buildWorld);
+// ═══════════════════════════════════════════════════════════════════
+// RESIZE
+// ═══════════════════════════════════════════════════════════════════
+window.addEventListener('resize', ()=>{
+  // Debounce: wait for the resize to settle (important on mobile)
+  clearTimeout(window._resizeTimer);
+  window._resizeTimer = setTimeout(buildWorld, 120);
+});
 
-window.addEventListener('DOMContentLoaded', () => {
-  if (!IS_DESKTOP) { lockLandscape(); goFullscreen(); }
-  buildWorld();
-  startSensor();
-  setupDrag();
+// ═══════════════════════════════════════════════════════════════════
+// ENTRY POINT
+// ═══════════════════════════════════════════════════════════════════
+window.addEventListener('DOMContentLoaded', ()=>{
+  setupDrag();   // register once, on document — survives canvas rebuilds
+  startSensor(); // start sensor (or set fixed gravity for desktop)
+  buildWorld();  // build physics world and start rendering
 });
 </script>
 </body>
