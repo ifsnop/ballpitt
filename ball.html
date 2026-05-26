@@ -8,37 +8,27 @@
 <style>
   * { margin: 0; padding: 0; box-sizing: border-box; }
   html, body {
-    background: #0a0a0f;
-    overflow: hidden;
+    background: #0a0a0f; overflow: hidden;
     width: 100%; height: 100%;
     font-family: 'Courier New', monospace;
     touch-action: none;
   }
-
-  /* Rotate notice — solo visible en portrait ANTES de que el juego empiece */
   #rotate-msg {
-    display: none;
-    position: fixed; inset: 0;
-    background: #0a0a0f;
-    z-index: 999;
-    flex-direction: column;
-    align-items: center; justify-content: center;
-    gap: 20px; color: #00ff78;
-    text-align: center; padding: 32px;
+    display: none; position: fixed; inset: 0;
+    background: #0a0a0f; z-index: 999;
+    flex-direction: column; align-items: center; justify-content: center;
+    gap: 20px; color: #00ff78; text-align: center; padding: 32px;
   }
   #rotate-msg.show { display: flex; }
   #rotate-msg svg  { animation: spin 2s linear infinite; }
   @keyframes spin  { to { transform: rotate(360deg); } }
   #rotate-msg p    { font-size: 14px; opacity: 0.7; letter-spacing: 0.1em; }
 
-  /* Debug top bar */
   #debug {
-    position: fixed; top: 0; left: 0; right: 0;
-    z-index: 100;
+    position: fixed; top: 0; left: 0; right: 0; z-index: 100;
     background: rgba(0,255,120,0.07);
     border-bottom: 1px solid rgba(0,255,120,0.18);
-    padding: 3px 8px;
-    font-size: 10px; color: #00ff78;
+    padding: 3px 8px; font-size: 10px; color: #00ff78;
     letter-spacing: 0.04em;
     display: flex; flex-wrap: wrap; align-items: center;
     backdrop-filter: blur(4px); line-height: 1.65;
@@ -48,46 +38,29 @@
   .dv { font-weight: bold; font-size: 10px; min-width: 34px; }
   .ds { opacity: 0.18; margin: 0 5px; }
 
-  /* FPS corner */
   #fps-box {
-    position: fixed; bottom: 8px; right: 10px;
-    z-index: 100;
+    position: fixed; bottom: 8px; right: 10px; z-index: 100;
     font-family: 'Courier New', monospace;
-    font-size: 10px; color: #00ff78;
-    opacity: 0.55; letter-spacing: 0.05em;
-    pointer-events: none;
+    font-size: 10px; color: #00ff78; opacity: 0.55;
+    letter-spacing: 0.05em; pointer-events: none;
   }
-
-  /* 2D grid canvas behind WebGL canvas */
   canvas { display: block; position: fixed; top: 0; left: 0; }
-  #gl    { z-index: 1; }
-  #c2d   { z-index: 2; }
+  #gl  { z-index: 1; }
+  #c2d { z-index: 2; }
 
-  /* Overlay */
   #permission-overlay {
-    position: fixed; inset: 0;
-    background: #0a0a0f;
+    position: fixed; inset: 0; background: #0a0a0f;
     display: flex; flex-direction: column;
     align-items: center; justify-content: center;
     gap: 24px; z-index: 300; padding: 32px;
   }
-  #permission-overlay h1 {
-    font-size: 20px; color: #00ff78;
-    letter-spacing: 0.12em; text-align: center;
-  }
-  #permission-overlay p {
-    font-size: 13px; color: rgba(0,255,120,0.6);
-    text-align: center; line-height: 1.7; max-width: 320px;
-  }
+  #permission-overlay h1 { font-size: 20px; color: #00ff78; letter-spacing: 0.12em; text-align: center; }
+  #permission-overlay p  { font-size: 13px; color: rgba(0,255,120,0.6); text-align: center; line-height: 1.7; max-width: 320px; }
   #btn-start {
-    background: transparent;
-    border: 1.5px solid #00ff78; color: #00ff78;
-    font-family: 'Courier New', monospace;
-    font-size: 13px; letter-spacing: 0.15em;
-    padding: 14px 36px; cursor: pointer;
-    text-transform: uppercase;
-    transition: background .2s, color .2s;
-    -webkit-tap-highlight-color: transparent;
+    background: transparent; border: 1.5px solid #00ff78; color: #00ff78;
+    font-family: 'Courier New', monospace; font-size: 13px; letter-spacing: 0.15em;
+    padding: 14px 36px; cursor: pointer; text-transform: uppercase;
+    transition: background .2s, color .2s; -webkit-tap-highlight-color: transparent;
   }
   #btn-start:active { background: #00ff78; color: #0a0a0f; }
 </style>
@@ -109,11 +82,8 @@
   <button id="btn-start">INICIAR</button>
 </div>
 
-<!-- WebGL: background grid + bubble refraction -->
 <canvas id="gl"></canvas>
-<!-- 2D: corner brackets, trail, etc. -->
 <canvas id="c2d"></canvas>
-
 <div id="debug">cargando...</div>
 <div id="fps-box">FPS —</div>
 
@@ -131,27 +101,75 @@ const ALPHA        = 0.18;
 // ── State ──────────────────────────────────────────────────────────────────
 let W, H;
 let engine, runner, ball;
-let ctx2d;            // 2D canvas context
-let gl, glState;      // WebGL
-let ax = 0, ay = 0, az = 0;
+let ctx2d, glState;
+let ax = 0, ay = 0, az = 0;   // raw filtered sensor values
 let sensorOk = false;
 let fps = 0, lastTime = performance.now(), frameCount = 0;
 let drawLoopId = null;
-let hasGoneLandscape = false;  // once landscape, stop nagging
+let hasGoneLandscape = false;
 
-// ── Helpers ────────────────────────────────────────────────────────────────
+// ── Orientation angle ──────────────────────────────────────────────────────
+// We read screen.orientation.angle (0, 90, 180, 270) to remap axes.
+// 0   = portrait-primary       (phone upright, home bottom)
+// 90  = landscape-secondary    (home left  — rotated CW from portrait)
+// 270 = landscape-primary      (home right — rotated CCW from portrait)
+// 180 = portrait-secondary     (upside-down)
+function getOrientAngle() {
+  if (screen.orientation && screen.orientation.angle !== undefined)
+    return screen.orientation.angle;
+  return (window.orientation || 0);  // legacy fallback
+}
+
+// Given raw device accelerometer (a.x, a.y) and screen orientation angle,
+// return { gx, gy } that correctly drives gravity in screen-space.
+//
+// Device axes are FIXED to the physical device regardless of how the screen
+// rotates. When the screen rotates, the mapping from device axes to screen
+// axes changes:
+//
+//   angle=0   (portrait)     : screen-X = +devX, screen-Y = -devY
+//   angle=90  (landscape-sec): screen-X = +devY, screen-Y = +devX  (home left)
+//   angle=270 (landscape-pri): screen-X = -devY, screen-Y = -devX  (home right)
+//   angle=180 (portrait inv) : screen-X = -devX, screen-Y = +devY
+//
+// We then negate because gravity should PULL (positive gravity = ball moves
+// in that direction), and the accelerometer reads the REACTION force.
+// accelerationIncludingGravity on a stationary tilted phone gives the
+// component of g projected onto each axis — we want to use that directly
+// as the gravity direction in game-space.
+function computeGravity(rawAx, rawAy) {
+  const G   = 9.8;
+  const ang = ((getOrientAngle() % 360) + 360) % 360;
+  let gx, gy;
+  if (ang < 45 || ang >= 315) {
+    // Portrait
+    gx =  rawAx / G;
+    gy = -rawAy / G;
+  } else if (ang < 135) {
+    // Landscape-secondary (home left, rotated 90° CW)
+    gx =  rawAy / G;
+    gy =  rawAx / G;
+  } else if (ang < 225) {
+    // Portrait-inverted
+    gx = -rawAx / G;
+    gy =  rawAy / G;
+  } else {
+    // Landscape-primary (home right, rotated 270° CW / 90° CCW)
+    gx = -rawAy / G;
+    gy = -rawAx / G;
+  }
+  return { gx, gy };
+}
+
+// ── Debug ──────────────────────────────────────────────────────────────────
 const dbg    = document.getElementById('debug');
 const fpsBox = document.getElementById('fps-box');
 const rotMsg = document.getElementById('rotate-msg');
 
-// Fix -0.0 display
-function fmt1(n) { const s = n.toFixed(1); return s === '-0.0' ? '0.0' : s; }
-function fmt2(n) { const s = n.toFixed(2); return s === '-0.00' ? '0.00' : s; }
-function fmt0(n) { const s = n.toFixed(0); return s === '-0' ? '0' : s; }
-
-function dg(label, val) {
-  return `<span class="dg"><span class="dl">${label}</span><span class="dv">${val}</span></span>`;
-}
+function fmt1(n) { const s = (+n).toFixed(1); return s === '-0.0' ? '0.0' : s; }
+function fmt2(n) { const s = (+n).toFixed(2); return s === '-0.00' ? '0.00' : s; }
+function fmt0(n) { const s = (+n).toFixed(0); return s === '-0' ? '0' : s; }
+function dg(l, v) { return `<span class="dg"><span class="dl">${l}</span><span class="dv">${v}</span></span>`; }
 const ds = '<span class="ds">|</span>';
 
 function updateDebug() {
@@ -162,17 +180,15 @@ function updateDebug() {
   const spd = ball ? fmt1(Math.hypot(ball.velocity.x, ball.velocity.y)) : '--';
   const gx  = engine ? fmt2(engine.gravity.x) : '--';
   const gy  = engine ? fmt2(engine.gravity.y) : '--';
-
+  const ang = getOrientAngle();
   dbg.innerHTML =
-    dg('SENSOR', sensorOk ? '✓ OK' : '✗ OFF') + ds +
-    dg('AX', fmt1(ax)) + ds +
-    dg('AY', fmt1(ay)) + ds +
-    dg('AZ', fmt1(az)) + ds +
+    dg('SNS', sensorOk ? '✓' : '✗') + ds +
+    dg('ANG', ang) + ds +
+    dg('AX', fmt1(ax)) + ds + dg('AY', fmt1(ay)) + ds + dg('AZ', fmt1(az)) + ds +
     dg('GX', gx) + ds + dg('GY', gy) + ds +
     dg('POS', `${bx},${by}`) + ds +
     dg('VEL', `${vx},${vy}`) + ds +
     dg('SPD', spd);
-
   fpsBox.textContent = `FPS ${fps}`;
 }
 
@@ -182,34 +198,30 @@ function tickFPS() {
   if (now - lastTime >= 1000) { fps = frameCount; frameCount = 0; lastTime = now; }
 }
 
-// ── Hide browser UI ────────────────────────────────────────────────────────
+// ── Browser UI ─────────────────────────────────────────────────────────────
 function hideBrowserUI() {
-  // Request fullscreen (works on Android Chrome, some iOS Safari with gesture)
   const el = document.documentElement;
-  if (el.requestFullscreen)            el.requestFullscreen({ navigationUI: 'hide' }).catch(()=>{});
+  if (el.requestFullscreen) el.requestFullscreen({ navigationUI: 'hide' }).catch(()=>{});
   else if (el.webkitRequestFullscreen) el.webkitRequestFullscreen();
-  // Scroll trick — pushes address bar away on Android
   window.scrollTo(0, 1);
   setTimeout(() => window.scrollTo(0, 1), 300);
 }
 
-// ── Orientation lock ───────────────────────────────────────────────────────
 function lockLandscape() {
   if (screen.orientation?.lock) screen.orientation.lock('landscape').catch(()=>{});
-  if (screen.lockOrientation)      screen.lockOrientation('landscape');
-  if (screen.mozLockOrientation)   screen.mozLockOrientation('landscape');
-  if (screen.msLockOrientation)    screen.msLockOrientation('landscape');
+  if (screen.lockOrientation)    screen.lockOrientation('landscape');
+  if (screen.mozLockOrientation) screen.mozLockOrientation('landscape');
+  if (screen.msLockOrientation)  screen.msLockOrientation('landscape');
 }
 
-// Rotation nag — only before first landscape
 function checkOrientation() {
   if (hasGoneLandscape) { rotMsg.classList.remove('show'); return; }
-  const isLandscape = window.innerWidth > window.innerHeight;
-  if (isLandscape) { hasGoneLandscape = true; rotMsg.classList.remove('show'); }
-  else             { rotMsg.classList.add('show'); }
+  const isL = window.innerWidth > window.innerHeight;
+  if (isL) { hasGoneLandscape = true; rotMsg.classList.remove('show'); }
+  else       rotMsg.classList.add('show');
 }
 
-// ── WebGL setup ────────────────────────────────────────────────────────────
+// ── WebGL ──────────────────────────────────────────────────────────────────
 function initGL() {
   const canvas = document.getElementById('gl');
   canvas.width = W; canvas.height = H;
@@ -217,98 +229,124 @@ function initGL() {
             canvas.getContext('experimental-webgl', { alpha: false });
   if (!g) return null;
 
-  // ── Vertex shader: full-screen quad ──────────────────────────────────────
   const vsrc = `
     attribute vec2 aPos;
     varying   vec2 vUv;
-    void main() {
-      vUv = aPos * 0.5 + 0.5;
-      gl_Position = vec4(aPos, 0.0, 1.0);
-    }`;
+    void main() { vUv = aPos*0.5+0.5; gl_Position = vec4(aPos,0.,1.); }`;
 
-  // ── Fragment shader ───────────────────────────────────────────────────────
-  // Draws:
-  //   1. Line-grid background (horizontal + vertical lines)
-  //   2. Inside the bubble radius: sphere-refraction UV distortion
-  //   3. Minimal speculars (no iridescent rim)
+  // ── Fragment shader ─────────────────────────────────────────────────────
+  // True sphere refraction:
+  //   - For each pixel inside the ball disc, compute the 3-D surface normal
+  //     of a unit sphere at that XY position.
+  //   - Apply Snell's law (vector form) to find the refracted ray direction.
+  //   - Project the refracted ray back to the background plane (z=0) to get
+  //     the sample coordinates.
+  //   This gives strong fish-eye distortion at the edges (grazing angles)
+  //   and mild magnification near the centre, exactly like a glass marble.
+  //
+  // Halo: a soft glowing ring just outside the ball radius drawn in the
+  //   background section using a smooth falloff.
   const fsrc = `
-    precision mediump float;
-    varying vec2 vUv;
+    precision highp float;
+    varying vec2  vUv;
     uniform vec2  uRes;
-    uniform vec2  uBall;
+    uniform vec2  uBall;   // ball centre in px (Y from top)
     uniform float uRadius;
-    uniform float uTime;
 
-    // ── Line grid ────────────────────────────────────────────────────────────
+    // ── Line grid ──────────────────────────────────────────────────────────
     float grid(vec2 px) {
-      float gs   = 32.0;          // cell size px
-      float lw   = 0.7;           // line half-width px
-      vec2  g    = mod(px, gs);
-      float lineH = smoothstep(lw+0.8, lw, abs(g.y - 0.0));
-      float lineV = smoothstep(lw+0.8, lw, abs(g.x - 0.0));
-      return max(lineH, lineV);
-    }
-
-    // ── Sphere refraction UV ──────────────────────────────────────────────────
-    vec2 refractionUV(vec2 fragPx, vec2 centre, float r) {
-      vec2  d  = fragPx - centre;
-      float nd = length(d) / r;
-      float nz = sqrt(max(0.0, 1.0 - nd*nd));
-      float eta = 0.68;
-      vec2 nxy  = d / r;
-      vec2 refr = nxy / eta - nxy * (nz / eta - nz) / (nz + 0.001);
-      vec2 samplePx = centre + refr * r * 1.55;
-      return samplePx / uRes;
+      float gs  = 34.0;
+      float lw  = 0.65;
+      vec2  gv  = mod(px, gs);
+      float h   = smoothstep(lw+1.0, lw, abs(gv.y));
+      float v   = smoothstep(lw+1.0, lw, abs(gv.x));
+      return max(h, v);
     }
 
     void main() {
-      vec2 fragPx = vUv * uRes;
-      fragPx.y    = uRes.y - fragPx.y;
+      // Pixel coords, Y flipped to match screen (top=0)
+      vec2  px  = vUv * uRes;
+      px.y      = uRes.y - px.y;
 
-      // Background
-      float g    = grid(fragPx);
-      vec3  bgCol  = vec3(0.04, 0.04, 0.07);
-      vec3  lineCol= vec3(0.16, 0.20, 0.28);
-      vec3  bg   = mix(bgCol, lineCol, g);
+      vec3  bgDark = vec3(0.040, 0.040, 0.072);
+      vec3  bgLine = vec3(0.155, 0.195, 0.270);
 
-      // Distance to ball
-      vec2  d2ball = fragPx - uBall;
-      float dist   = length(d2ball);
-      float r      = uRadius;
+      // Background at this pixel
+      float gb  = grid(px);
+      vec3  bg  = mix(bgDark, bgLine, gb);
 
+      vec2  d   = px - uBall;
+      float r   = uRadius;
+      float dist= length(d);
+
+      // ── Halo (outside ball) ────────────────────────────────────────────
       if (dist > r) {
+        float haloW = r * 0.38;
+        float t     = (dist - r) / haloW;
+        float halo  = exp(-t * t * 4.5) * 0.38;
+        // Soft blue-white halo colour
+        vec3  haloCol = vec3(0.55, 0.78, 1.00);
+        bg = mix(bg, bg + haloCol * halo, smoothstep(1.0, 0.0, t));
         gl_FragColor = vec4(bg, 1.0);
         return;
       }
 
-      float nd = dist / r;
-      float nz = sqrt(max(0.0, 1.0 - nd*nd));
+      // ── Inside ball — sphere refraction ───────────────────────────────
+      float nd = dist / r;                       // normalised radius 0..1
+      float nz = sqrt(max(0.0, 1.0 - nd*nd));   // z on unit sphere surface
 
-      // Refracted grid sample
-      vec2 sUV  = refractionUV(fragPx, uBall, r);
-      sUV       = clamp(sUV, 0.0, 1.0);
-      vec2 sPx  = sUV * uRes;
-      sPx.y     = uRes.y - sPx.y;
-      float sg  = grid(sPx);
-      vec3  sBg = mix(bgCol, lineCol, sg);
+      // Surface normal pointing outward from sphere
+      vec3 N = normalize(vec3(d / r, nz));
 
-      // Very faint interior tint
-      vec3 tint = vec3(0.80, 0.94, 1.0) * 0.04 * (1.0 - nd);
+      // Incident ray: straight in from the viewer (screen → glass)
+      vec3 I = vec3(0.0, 0.0, -1.0);
 
-      vec3 col  = sBg + tint;
+      // Snell's law (vector form):  R = eta*I + (eta*cosI - cosT)*N
+      // eta = n1/n2, using n_air=1.0, n_glass≈1.55
+      float eta   = 1.0 / 1.55;
+      float cosI  = -dot(N, I);                  // = nz (positive)
+      float sin2T = eta*eta * (1.0 - cosI*cosI);
+      vec3  refr;
+      if (sin2T > 1.0) {
+        // Total internal reflection — mirror the incident ray
+        refr = I - 2.0 * dot(I, N) * N;
+      } else {
+        float cosT = sqrt(1.0 - sin2T);
+        refr = eta * I + (eta * cosI - cosT) * N;
+      }
 
-      // Primary specular — soft, dim
-      vec2 sp1  = d2ball - vec2(-r*0.38, -r*0.38);
-      float s1  = exp(-dot(sp1,sp1) / (2.0*(r*0.20)*(r*0.20)));
-      col      += vec3(1.0) * s1 * 0.28;
+      // March refracted ray to the background plane (z = -depth)
+      // We pick depth = 1.5*r so there is significant lateral displacement
+      float depth    = 1.5 * r;
+      float t_hit    = -depth / refr.z;          // refr.z is negative (going away)
+      vec2  bgOffset = refr.xy * t_hit;
+      vec2  samplePx = uBall + bgOffset;
+
+      // Clamp to screen
+      samplePx = clamp(samplePx, vec2(0.0), uRes);
+
+      // Sample background at refracted position
+      vec2  sPx  = samplePx;
+      sPx.y      = uRes.y - sPx.y;   // re-flip for grid function
+      float sg   = grid(sPx);
+      vec3  sBg  = mix(bgDark, bgLine, sg);
+
+      // Very subtle blue interior tint (more pronounced near edge)
+      vec3 tint  = vec3(0.70, 0.88, 1.00) * 0.05 * (0.3 + 0.7*(1.0-nz));
+      vec3 col   = sBg + tint;
+
+      // Soft specular — small, dim, just enough to feel glassy
+      vec2  sp1  = d - vec2(-r*0.36, -r*0.36);
+      float s1   = exp(-dot(sp1,sp1) / (2.0*(r*0.19)*(r*0.19)));
+      col       += vec3(1.0) * s1 * 0.22;
 
       // Tiny sharp dot
-      vec2 sp2  = d2ball + vec2(r*0.22, r*0.28);
-      float s2  = exp(-dot(sp2,sp2) / (2.0*(r*0.055)*(r*0.055)));
-      col      += vec3(1.0) * s2 * 0.55;
+      vec2  sp2  = d + vec2(r*0.20, r*0.26);
+      float s2   = exp(-dot(sp2,sp2) / (2.0*(r*0.048)*(r*0.048)));
+      col       += vec3(1.0) * s2 * 0.50;
 
-      // Edge fade
-      float edge = smoothstep(1.0, 0.92, nd);
+      // Edge fade (blend with background at the very rim)
+      float edge = smoothstep(1.0, 0.90, nd);
       col = mix(bg, col, edge);
 
       gl_FragColor = vec4(col, 1.0);
@@ -320,15 +358,13 @@ function initGL() {
     if (!g.getShaderParameter(s, g.COMPILE_STATUS)) { console.error(g.getShaderInfoLog(s)); return null; }
     return s;
   }
-
   const prog = g.createProgram();
-  g.attachShader(prog, compile(g.VERTEX_SHADER,   vsrc));
+  g.attachShader(prog, compile(g.VERTEX_SHADER, vsrc));
   g.attachShader(prog, compile(g.FRAGMENT_SHADER, fsrc));
   g.linkProgram(prog);
   if (!g.getProgramParameter(prog, g.LINK_STATUS)) { console.error(g.getProgramInfoLog(prog)); return null; }
   g.useProgram(prog);
 
-  // Full-screen quad
   const buf = g.createBuffer();
   g.bindBuffer(g.ARRAY_BUFFER, buf);
   g.bufferData(g.ARRAY_BUFFER, new Float32Array([-1,-1, 1,-1, -1,1, 1,1]), g.STATIC_DRAW);
@@ -337,22 +373,20 @@ function initGL() {
   g.vertexAttribPointer(aPos, 2, g.FLOAT, false, 0, 0);
 
   return {
-    g, prog,
+    g,
     uRes:    g.getUniformLocation(prog, 'uRes'),
     uBall:   g.getUniformLocation(prog, 'uBall'),
     uRadius: g.getUniformLocation(prog, 'uRadius'),
-    uTime:   g.getUniformLocation(prog, 'uTime'),
   };
 }
 
-function renderGL(t) {
+function renderGL() {
   if (!glState) return;
-  const { g, uRes, uBall, uRadius, uTime } = glState;
+  const { g, uRes, uBall, uRadius } = glState;
   g.viewport(0, 0, W, H);
   g.uniform2f(uRes, W, H);
   g.uniform2f(uBall, ball ? ball.position.x : W/2, ball ? ball.position.y : H/2);
   g.uniform1f(uRadius, RADIUS);
-  g.uniform1f(uTime, t * 0.001);
   g.drawArrays(g.TRIANGLE_STRIP, 0, 4);
 }
 
@@ -364,12 +398,10 @@ function buildWorld() {
   W = window.innerWidth;
   H = window.innerHeight;
 
-  // Resize 2D canvas
   const c2d = document.getElementById('c2d');
   c2d.width = W; c2d.height = H;
   ctx2d = c2d.getContext('2d');
 
-  // Resize / re-init GL canvas
   const glCanvas = document.getElementById('gl');
   glCanvas.width = W; glCanvas.height = H;
   glState = initGL();
@@ -377,10 +409,10 @@ function buildWorld() {
   engine = Engine.create({ gravity: { x: 0, y: 0, scale: 0.001 } });
   const wo = { isStatic: true, restitution: RESTITUTION, friction: FRICTION };
   Composite.add(engine.world, [
-    Bodies.rectangle(W/2,   H+WALL/2,    W+WALL*2, WALL,      wo),
-    Bodies.rectangle(W/2,   -WALL/2,     W+WALL*2, WALL,      wo),
-    Bodies.rectangle(-WALL/2,   H/2,     WALL, H+WALL*2,      wo),
-    Bodies.rectangle(W+WALL/2,  H/2,     WALL, H+WALL*2,      wo),
+    Bodies.rectangle(W/2,    H+WALL/2,   W+WALL*2, WALL,     wo),
+    Bodies.rectangle(W/2,   -WALL/2,     W+WALL*2, WALL,     wo),
+    Bodies.rectangle(-WALL/2,   H/2,     WALL, H+WALL*2,     wo),
+    Bodies.rectangle(W+WALL/2,  H/2,     WALL, H+WALL*2,     wo),
   ]);
 
   ball = Bodies.circle(W/2, H/2, RADIUS, {
@@ -396,26 +428,24 @@ function buildWorld() {
   drawLoop();
 }
 
-// ── Main render loop ───────────────────────────────────────────────────────
-function drawLoop(t = 0) {
+// ── Render loop ────────────────────────────────────────────────────────────
+function drawLoop() {
   drawLoopId = requestAnimationFrame(drawLoop);
   tickFPS();
 
-  // Gravity
-  const G = 9.8;
-  engine.gravity.x =  ay / G;
-  engine.gravity.y =  ax / G;
+  // Apply gravity with correct orientation remapping
+  const { gx, gy } = computeGravity(ax, ay);
+  engine.gravity.x = gx;
+  engine.gravity.y = gy;
 
-  // 1. WebGL — background grid + bubble
-  renderGL(t);
+  renderGL();
 
-  // 2. 2D — corner brackets + trail
+  // 2D canvas: corner brackets + trail
   const c = ctx2d;
   c.clearRect(0, 0, W, H);
 
-  // Corner brackets
   const br = 22;
-  c.strokeStyle = 'rgba(0,255,120,0.12)';
+  c.strokeStyle = 'rgba(0,255,120,0.11)';
   c.lineWidth = 1;
   [[0,0],[W,0],[0,H],[W,H]].forEach(([cx,cy]) => {
     const sx = cx===0?1:-1, sy = cy===0?1:-1;
@@ -424,7 +454,6 @@ function drawLoop(t = 0) {
     c.stroke();
   });
 
-  // Trail
   if (ball) {
     const bx = ball.position.x, by = ball.position.y;
     const spd = Math.hypot(ball.velocity.x, ball.velocity.y);
@@ -432,12 +461,12 @@ function drawLoop(t = 0) {
       const nx = -ball.velocity.x/spd, ny = -ball.velocity.y/spd;
       const tl = Math.min(spd * 3.5, 70);
       const tg = c.createLinearGradient(bx, by, bx+nx*tl, by+ny*tl);
-      tg.addColorStop(0, 'rgba(180,230,255,0.18)');
-      tg.addColorStop(1, 'rgba(180,230,255,0)');
+      tg.addColorStop(0, 'rgba(180,220,255,0.15)');
+      tg.addColorStop(1, 'rgba(180,220,255,0)');
       c.beginPath();
-      c.moveTo(bx+nx*RADIUS*0.8, by+ny*RADIUS*0.8);
+      c.moveTo(bx+nx*RADIUS*0.85, by+ny*RADIUS*0.85);
       c.lineTo(bx+nx*tl, by+ny*tl);
-      c.lineWidth = RADIUS * 0.65; c.lineCap = 'round';
+      c.lineWidth = RADIUS * 0.6; c.lineCap = 'round';
       c.strokeStyle = tg; c.stroke();
     }
   }
@@ -465,7 +494,7 @@ function startSensor() {
   }
 }
 
-// ── Resize ─────────────────────────────────────────────────────────────────
+// ── Resize / orientation change ────────────────────────────────────────────
 window.addEventListener('resize', () => { checkOrientation(); buildWorld(); });
 
 // ── Start ──────────────────────────────────────────────────────────────────
