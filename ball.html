@@ -117,7 +117,8 @@ function updateDebug(){
     dg('DEV', IS_MOBILE?'MOB':'PC') + SEP +
     dg('SNS', sensorOk?'✓':'✗')    + SEP +
     (IS_MOBILE
-      ? dg('AX',f1(ax))+SEP+dg('AY',f1(ay))+SEP+dg('AZ',f1(az))+SEP
+      ? dg('AX',f1(ax))+SEP+dg('AY',f1(ay))+SEP+dg('AZ',f1(az))+SEP+
+        dg('SGN',sensorSign)+SEP+dg('FR',Math.min(sensorFrames,99))+SEP
       : '') +
     dg('GX',f2(gx))+SEP+dg('GY',f2(gy))+SEP+
     dg('BOLAS',balls.length)+SEP+
@@ -147,6 +148,28 @@ function tickFPS(){
 //
 // Desktop: fixed gy=1 (phone held vertical).
 // ═══════════════════════════════════════════════════════════════════
+// ═══════════════════════════════════════════════════════════════════
+// GRAVITY
+// Maps device accelerometer axes to screen-space gravity.
+//
+// accelerationIncludingGravity conventions vary by OS/browser:
+//   iOS:     ay ≈ -9.8 when portrait upright (home button down)
+//   Android: ay ≈ +9.8 when portrait upright
+//
+// We detect the sign from the first stable sensor reading and
+// store a correction factor so the mapping is always correct.
+//
+// Screen orientation angle remapping:
+//   0   portrait          screen-x=+devX  screen-y=-devY  (iOS sign)
+//   90  landscape home-L  screen-x=+devY  screen-y=+devX
+//   180 portrait inv      screen-x=-devX  screen-y=+devY
+//   270 landscape home-R  screen-x=-devY  screen-y=-devX
+//
+// Desktop: fixed gy=1 (phone held vertical, balls fall down).
+// ═══════════════════════════════════════════════════════════════════
+let sensorSign   = 0;    // +1 or -1, detected from first stable reading
+let sensorFrames = 0;    // frames since sensor started
+
 function screenAngle(){
   const a = screen.orientation?.angle ?? window.orientation ?? 0;
   return ((+a) % 360 + 360) % 360;
@@ -154,13 +177,45 @@ function screenAngle(){
 
 function currentGravity(){
   if (!IS_MOBILE) return {gx:0, gy:1};
-  // Fallback while sensor hasn't fired yet: gravity straight down
-  if (!sensorOk)  return {gx:0, gy:1};
-  const G = 9.8, ang = screenAngle();
-  if (ang < 45 || ang >= 315) return { gx:  ax/G, gy: -ay/G }; // portrait
-  if (ang < 135)              return { gx:  ay/G, gy:  ax/G }; // landscape home-left
-  if (ang < 225)              return { gx: -ax/G, gy:  ay/G }; // portrait inverted
-  /* 225-314 */               return { gx: -ay/G, gy: -ax/G }; // landscape home-right
+
+  // Use safe fallback until we have a stable sensor reading
+  if (!sensorOk || sensorFrames < 10) return {gx:0, gy:1};
+
+  // Detect platform sign convention once from az:
+  // az ≈ +9.8 face-up on both iOS and Android,
+  // but ay sign differs. We use az to infer the convention.
+  // Simpler: just use Math.sign of az-normalised ay at angle=0.
+  // Actually easiest: detect via the sign of az (always positive face-up).
+  // We'll use a direct approach: if the computed gy would be negative
+  // when az indicates the phone is face-up (az>5), flip the sign.
+  // → Instead, just use |az| > 5 to detect face-up and validate gy direction.
+
+  const G   = 9.8;
+  const ang = screenAngle();
+  let gx, gy;
+
+  if      (ang < 45 || ang >= 315) { gx =  ax/G; gy = -ay/G; }
+  else if (ang < 135)              { gx =  ay/G; gy =  ax/G; }
+  else if (ang < 225)              { gx = -ax/G; gy =  ay/G; }
+  else                             { gx = -ay/G; gy = -ax/G; }
+
+  // Sanity-check: if az > 5 (phone face-up, not face-down) and we are
+  // in portrait (ang≈0), gy should be positive (balls fall down).
+  // If it's negative, the platform uses inverted ay → flip both axes.
+  if (sensorSign === 0 && Math.abs(az) > 4) {
+    // az > 0 means face-up on all platforms.
+    // In portrait face-up, gravity should pull downward → gy > 0.
+    // If gy < 0, this platform uses opposite ay sign.
+    if (ang < 45 || ang >= 315) {
+      sensorSign = gy > 0 ? 1 : -1;
+    } else {
+      sensorSign = 1; // calibrate later from other orientations
+    }
+  }
+
+  if (sensorSign === -1) { gx = -gx; gy = -gy; }
+
+  return {gx, gy};
 }
 
 // ═══════════════════════════════════════════════════════════════════
@@ -467,7 +522,7 @@ function drawOverlay(){
   arrow(0,H/2,1,0,18);
 
   // ── Right gap (ESCAPE) ────────────────────────────────────────────
-  gapLine(W,gaps.rightT,W-12,gaps.rightT);
+  gapLine(W,gaps.righT,W-12,gaps.rightT);
   gapLine(W,gaps.rightB,W-12,gaps.rightB);
   gapLine(W,gaps.rightT,W,gaps.rightB);
   arrow(W,H/2,-1,0,18);
@@ -525,7 +580,7 @@ function mainLoop(){
 
   renderGL();
   drawOverlay();
-  updteDebug();
+  updateDebug();
 }
 
 // ═══════════════════════════════════════════════════════════════════
@@ -641,6 +696,7 @@ function startSensor(){
     ax+=ACCEL_ALPHA*((a.x||0)-ax);
     ay+=ACCEL_ALPHA*((a.y||0)-ay);
     az+=ACCEL_ALPHA*((a.z||0)-az);
+    sensorFrames++;
     sensorOk=true;
   }
 
