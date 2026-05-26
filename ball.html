@@ -5,7 +5,6 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
 <title>Ball Physics</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/matter-js/0.19.0/matter.min.js"></script>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/tone/14.8.49/Tone.js"></script>
 <style>
   * { margin: 0; padding: 0; box-sizing: border-box; }
   html, body {
@@ -91,7 +90,6 @@
 <script>
 const { Engine, Runner, Bodies, Composite } = Matter;
 
-// ── Constants ──────────────────────────────────────────────────────────────
 const WALL         = 40;
 const RADIUS_MAX   = 44;
 const RADIUS_MIN   = 22;
@@ -101,68 +99,31 @@ const FRICTION     = 0.0005;
 const FRICTION_AIR = 0.003;
 const ALPHA        = 0.18;
 
-// ── State ──────────────────────────────────────────────────────────────────
 let W, H;
 let engine, runner;
-let balls = [];            // [{ body, radius }, ...]
+let balls = [];
 let ctx2d, glState;
 let ax = 0, ay = 0, az = 0;
 let sensorOk = false;
 let fps = 0, lastTime = performance.now(), frameCount = 0;
 let drawLoopId = null;
 let hasGoneLandscape = false;
-let toneReady = false;
 
-// ── Orientation angle ──────────────────────────────────────────────────────
-// We read screen.orientation.angle (0, 90, 180, 270) to remap axes.
-// 0   = portrait-primary       (phone upright, home bottom)
-// 90  = landscape-secondary    (home left  — rotated CW from portrait)
-// 270 = landscape-primary      (home right — rotated CCW from portrait)
-// 180 = portrait-secondary     (upside-down)
+// ── Orientation ────────────────────────────────────────────────────────────
 function getOrientAngle() {
   if (screen.orientation && screen.orientation.angle !== undefined)
     return screen.orientation.angle;
-  return (window.orientation || 0);  // legacy fallback
+  return (window.orientation || 0);
 }
 
-// Given raw device accelerometer (a.x, a.y) and screen orientation angle,
-// return { gx, gy } that correctly drives gravity in screen-space.
-//
-// Device axes are FIXED to the physical device regardless of how the screen
-// rotates. When the screen rotates, the mapping from device axes to screen
-// axes changes:
-//
-//   angle=0   (portrait)     : screen-X = +devX, screen-Y = -devY
-//   angle=90  (landscape-sec): screen-X = +devY, screen-Y = +devX  (home left)
-//   angle=270 (landscape-pri): screen-X = -devY, screen-Y = -devX  (home right)
-//   angle=180 (portrait inv) : screen-X = -devX, screen-Y = +devY
-//
-// We then negate because gravity should PULL (positive gravity = ball moves
-// in that direction), and the accelerometer reads the REACTION force.
-// accelerationIncludingGravity on a stationary tilted phone gives the
-// component of g projected onto each axis — we want to use that directly
-// as the gravity direction in game-space.
 function computeGravity(rawAx, rawAy) {
   const G   = 9.8;
   const ang = ((getOrientAngle() % 360) + 360) % 360;
   let gx, gy;
-  if (ang < 45 || ang >= 315) {
-    // Portrait
-    gx =  rawAx / G;
-    gy = -rawAy / G;
-  } else if (ang < 135) {
-    // Landscape-secondary (home left, rotated 90° CW)
-    gx =  rawAy / G;
-    gy =  rawAx / G;
-  } else if (ang < 225) {
-    // Portrait-inverted
-    gx = -rawAx / G;
-    gy =  rawAy / G;
-  } else {
-    // Landscape-primary (home right, rotated 270° CW / 90° CCW)
-    gx = -rawAy / G;
-    gy = -rawAx / G;
-  }
+  if      (ang < 45 || ang >= 315) { gx =  rawAx / G; gy = -rawAy / G; }  // portrait
+  else if (ang < 135)              { gx =  rawAy / G; gy =  rawAx / G; }  // landscape-sec
+  else if (ang < 225)              { gx = -rawAx / G; gy =  rawAy / G; }  // portrait-inv
+  else                             { gx = -rawAy / G; gy = -rawAx / G; }  // landscape-pri
   return { gx, gy };
 }
 
@@ -171,10 +132,10 @@ const dbg    = document.getElementById('debug');
 const fpsBox = document.getElementById('fps-box');
 const rotMsg = document.getElementById('rotate-msg');
 
-function fmt1(n) { const s = (+n).toFixed(1); return s === '-0.0' ? '0.0' : s; }
-function fmt2(n) { const s = (+n).toFixed(2); return s === '-0.00' ? '0.00' : s; }
-function fmt0(n) { const s = (+n).toFixed(0); return s === '-0' ? '0' : s; }
-function dg(l, v) { return `<span class="dg"><span class="dl">${l}</span><span class="dv">${v}</span></span>`; }
+function fmt1(n) { const s = (+n).toFixed(1); return s==='-0.0'?'0.0':s; }
+function fmt2(n) { const s = (+n).toFixed(2); return s==='-0.00'?'0.00':s; }
+function fmt0(n) { const s = (+n).toFixed(0); return s==='-0'?'0':s; }
+function dg(l,v) { return `<span class="dg"><span class="dl">${l}</span><span class="dv">${v}</span></span>`; }
 const ds = '<span class="ds">|</span>';
 
 function updateDebug() {
@@ -186,10 +147,9 @@ function updateDebug() {
   const spd = b ? fmt1(Math.hypot(b.velocity.x, b.velocity.y)) : '--';
   const gx  = engine ? fmt2(engine.gravity.x) : '--';
   const gy  = engine ? fmt2(engine.gravity.y) : '--';
-  const ang = getOrientAngle();
   dbg.innerHTML =
-    dg('SNS', sensorOk ? '✓' : '✗') + ds +
-    dg('ANG', ang) + ds +
+    dg('SNS', sensorOk?'✓':'✗') + ds +
+    dg('ANG', getOrientAngle()) + ds +
     dg('AX', fmt1(ax)) + ds + dg('AY', fmt1(ay)) + ds + dg('AZ', fmt1(az)) + ds +
     dg('GX', gx) + ds + dg('GY', gy) + ds +
     dg('POS', `${bx},${by}`) + ds +
@@ -207,10 +167,10 @@ function tickFPS() {
 // ── Browser UI ─────────────────────────────────────────────────────────────
 function hideBrowserUI() {
   const el = document.documentElement;
-  if (el.requestFullscreen) el.requestFullscreen({ navigationUI: 'hide' }).catch(()=>{});
+  if (el.requestFullscreen) el.requestFullscreen({ navigationUI:'hide' }).catch(()=>{});
   else if (el.webkitRequestFullscreen) el.webkitRequestFullscreen();
-  window.scrollTo(0, 1);
-  setTimeout(() => window.scrollTo(0, 1), 300);
+  window.scrollTo(0,1);
+  setTimeout(() => window.scrollTo(0,1), 300);
 }
 
 function lockLandscape() {
@@ -222,263 +182,220 @@ function lockLandscape() {
 
 function checkOrientation() {
   if (hasGoneLandscape) { rotMsg.classList.remove('show'); return; }
-  const isL = window.innerWidth > window.innerHeight;
-  if (isL) { hasGoneLandscape = true; rotMsg.classList.remove('show'); }
-  else       rotMsg.classList.add('show');
+  if (window.innerWidth > window.innerHeight) { hasGoneLandscape = true; rotMsg.classList.remove('show'); }
+  else rotMsg.classList.add('show');
 }
 
 // ── WebGL ──────────────────────────────────────────────────────────────────
+// Two-pass strategy:
+//   Pass A  — one full-screen quad draws the grid background.
+//   Pass B  — per ball: draw a tight quad covering only (centre ± radius+halo).
+//             Alpha blending ON. Outside the disc the fragment is discarded
+//             (alpha=0) so previous content shows through. This means each ball
+//             can have its own halo without erasing the others.
+
 function initGL() {
   const canvas = document.getElementById('gl');
   canvas.width = W; canvas.height = H;
-  const g = canvas.getContext('webgl', { alpha: false }) ||
+  const g = canvas.getContext('webgl', { alpha: false, premultipliedAlpha: false }) ||
             canvas.getContext('experimental-webgl', { alpha: false });
   if (!g) return null;
 
-  const vsrc = `
+  // ── Background shader (full-screen quad, no ball) ────────────────────────
+  const bgVsrc = `
     attribute vec2 aPos;
     varying   vec2 vUv;
-    void main() { vUv = aPos*0.5+0.5; gl_Position = vec4(aPos,0.,1.); }`;
+    void main(){ vUv=aPos*.5+.5; gl_Position=vec4(aPos,0.,1.); }`;
 
-  // ── Fragment shader ─────────────────────────────────────────────────────
-  // True sphere refraction:
-  //   - For each pixel inside the ball disc, compute the 3-D surface normal
-  //     of a unit sphere at that XY position.
-  //   - Apply Snell's law (vector form) to find the refracted ray direction.
-  //   - Project the refracted ray back to the background plane (z=0) to get
-  //     the sample coordinates.
-  //   This gives strong fish-eye distortion at the edges (grazing angles)
-  //   and mild magnification near the centre, exactly like a glass marble.
-  //
-  // Halo: a soft glowing ring just outside the ball radius drawn in the
-  //   background section using a smooth falloff.
-  const fsrc = `
+  const bgFsrc = `
+    precision mediump float;
+    varying vec2 vUv;
+    uniform vec2 uRes;
+    float grid(vec2 px){
+      float gs=34.; float lw=0.65;
+      vec2 g=mod(px,gs);
+      return max(smoothstep(lw+1.,lw,abs(g.y)), smoothstep(lw+1.,lw,abs(g.x)));
+    }
+    void main(){
+      vec2 px=vUv*uRes; px.y=uRes.y-px.y;
+      vec3 bgD=vec3(.040,.040,.072), bgL=vec3(.155,.195,.270);
+      gl_FragColor=vec4(mix(bgD,bgL,grid(px)),1.);
+    }`;
+
+  // ── Ball shader ───────────────────────────────────────────────────────────
+  // Draws one ball per call on a per-ball tight quad.
+  // Clip-space coords of the quad corners are passed as aPos,
+  // but we also get the fragment's screen-px via vPx.
+  // Outside (disc+halo) → alpha=0 (discard), so blending leaves bg intact.
+  const ballVsrc = `
+    attribute vec2 aPos;   // clip-space quad corner
+    varying   vec2 vPx;    // screen px of this fragment (Y from top)
+    uniform   vec2 uRes;
+    void main(){
+      vPx = (aPos*.5+.5)*uRes;
+      vPx.y = uRes.y - vPx.y;
+      gl_Position=vec4(aPos,0.,1.);
+    }`;
+
+  const ballFsrc = `
     precision highp float;
-    varying vec2  vUv;
+    varying vec2  vPx;
     uniform vec2  uRes;
-    uniform vec2  uBall;   // ball centre in px (Y from top)
+    uniform vec2  uBall;    // centre px (Y from top)
     uniform float uRadius;
 
-    // ── Line grid ──────────────────────────────────────────────────────────
-    float grid(vec2 px) {
-      float gs  = 34.0;
-      float lw  = 0.65;
-      vec2  gv  = mod(px, gs);
-      float h   = smoothstep(lw+1.0, lw, abs(gv.y));
-      float v   = smoothstep(lw+1.0, lw, abs(gv.x));
-      return max(h, v);
+    float grid(vec2 px){
+      float gs=34.; float lw=0.65;
+      vec2 g=mod(px,gs);
+      return max(smoothstep(lw+1.,lw,abs(g.y)), smoothstep(lw+1.,lw,abs(g.x)));
+    }
+    vec3 bgColor(vec2 px){
+      vec3 bgD=vec3(.040,.040,.072), bgL=vec3(.155,.195,.270);
+      return mix(bgD,bgL,grid(px));
     }
 
-    void main() {
-      // Pixel coords, Y flipped to match screen (top=0)
-      vec2  px  = vUv * uRes;
-      px.y      = uRes.y - px.y;
+    void main(){
+      vec2  d    = vPx - uBall;
+      float dist = length(d);
+      float r    = uRadius;
+      float haloW= r * 0.40;
+      float outerR = r + haloW;
 
-      vec3  bgDark = vec3(0.040, 0.040, 0.072);
-      vec3  bgLine = vec3(0.155, 0.195, 0.270);
+      // Fully outside halo → transparent, preserve background
+      if(dist > outerR){ gl_FragColor=vec4(0.); return; }
 
-      // Background at this pixel
-      float gb  = grid(px);
-      vec3  bg  = mix(bgDark, bgLine, gb);
-
-      vec2  d   = px - uBall;
-      float r   = uRadius;
-      float dist= length(d);
-
-      // ── Halo (outside ball) ────────────────────────────────────────────
-      if (dist > r) {
-        float haloW = r * 0.38;
-        float t     = (dist - r) / haloW;
-        float halo  = exp(-t * t * 4.5) * 0.38;
-        // Soft blue-white halo colour
-        vec3  haloCol = vec3(0.55, 0.78, 1.00);
-        bg = mix(bg, bg + haloCol * halo, smoothstep(1.0, 0.0, t));
-        gl_FragColor = vec4(bg, 1.0);
+      // ── Halo (between r and outerR) ──────────────────────────────────────
+      if(dist > r){
+        float t = (dist-r)/haloW;
+        float h = exp(-t*t*4.5)*0.42;
+        vec3 hCol = vec3(0.50,0.75,1.00);
+        gl_FragColor = vec4(hCol*h, h);
         return;
       }
 
-      // ── Inside ball — sphere refraction ───────────────────────────────
-      float nd = dist / r;                       // normalised radius 0..1
-      float nz = sqrt(max(0.0, 1.0 - nd*nd));   // z on unit sphere surface
-
-      // Surface normal pointing outward from sphere
-      vec3 N = normalize(vec3(d / r, nz));
-
-      // Incident ray: straight in from the viewer (screen → glass)
-      vec3 I = vec3(0.0, 0.0, -1.0);
-
-      // Snell's law (vector form):  R = eta*I + (eta*cosI - cosT)*N
-      // eta = n1/n2, using n_air=1.0, n_glass≈1.55
-      float eta   = 1.0 / 1.55;
-      float cosI  = -dot(N, I);                  // = nz (positive)
-      float sin2T = eta*eta * (1.0 - cosI*cosI);
-      vec3  refr;
-      if (sin2T > 1.0) {
-        // Total internal reflection — mirror the incident ray
-        refr = I - 2.0 * dot(I, N) * N;
+      // ── Inside ball — sphere refraction (Snell, n=1.55) ─────────────────
+      float nd = dist/r;
+      float nz = sqrt(max(0.,1.-nd*nd));
+      vec3  N  = normalize(vec3(d/r, nz));
+      vec3  I  = vec3(0.,0.,-1.);
+      float eta   = 1./1.55;
+      float cosI  = nz;
+      float sin2T = eta*eta*(1.-cosI*cosI);
+      vec2  bgOffset;
+      if(sin2T>1.){
+        // total internal reflection
+        vec3 refl = I - 2.*dot(I,N)*N;
+        bgOffset  = refl.xy * r * 1.5;
       } else {
-        float cosT = sqrt(1.0 - sin2T);
-        refr = eta * I + (eta * cosI - cosT) * N;
+        float cosT = sqrt(1.-sin2T);
+        vec3  refr = eta*I + (eta*cosI-cosT)*N;
+        float depth= 1.5*r;
+        float t_hit= -depth/refr.z;
+        bgOffset   = refr.xy * t_hit;
       }
+      vec2 samplePx = clamp(uBall+bgOffset, vec2(0.), uRes);
+      // flip Y for grid sampling
+      vec2 sPx = vec2(samplePx.x, uRes.y-samplePx.y);
+      vec3 col  = bgColor(sPx);
 
-      // March refracted ray to the background plane (z = -depth)
-      // We pick depth = 1.5*r so there is significant lateral displacement
-      float depth    = 1.5 * r;
-      float t_hit    = -depth / refr.z;          // refr.z is negative (going away)
-      vec2  bgOffset = refr.xy * t_hit;
-      vec2  samplePx = uBall + bgOffset;
+      // faint interior tint
+      col += vec3(0.70,0.88,1.00)*0.05*(0.3+0.7*(1.-nz));
 
-      // Clamp to screen
-      samplePx = clamp(samplePx, vec2(0.0), uRes);
+      // soft specular
+      vec2 sp1 = d-vec2(-r*.36,-r*.36);
+      col += vec3(1.)*exp(-dot(sp1,sp1)/(2.*(r*.19)*(r*.19)))*0.20;
 
-      // Sample background at refracted position
-      vec2  sPx  = samplePx;
-      sPx.y      = uRes.y - sPx.y;   // re-flip for grid function
-      float sg   = grid(sPx);
-      vec3  sBg  = mix(bgDark, bgLine, sg);
+      // tiny sharp dot
+      vec2 sp2 = d+vec2(r*.20,r*.26);
+      col += vec3(1.)*exp(-dot(sp2,sp2)/(2.*(r*.048)*(r*.048)))*0.45;
 
-      // Very subtle blue interior tint (more pronounced near edge)
-      vec3 tint  = vec3(0.70, 0.88, 1.00) * 0.05 * (0.3 + 0.7*(1.0-nz));
-      vec3 col   = sBg + tint;
+      // edge fade
+      float edge = smoothstep(1.,0.90,nd);
+      col = mix(bgColor(vPx), col, edge);
 
-      // Soft specular — small, dim, just enough to feel glassy
-      vec2  sp1  = d - vec2(-r*0.36, -r*0.36);
-      float s1   = exp(-dot(sp1,sp1) / (2.0*(r*0.19)*(r*0.19)));
-      col       += vec3(1.0) * s1 * 0.22;
-
-      // Tiny sharp dot
-      vec2  sp2  = d + vec2(r*0.20, r*0.26);
-      float s2   = exp(-dot(sp2,sp2) / (2.0*(r*0.048)*(r*0.048)));
-      col       += vec3(1.0) * s2 * 0.50;
-
-      // Edge fade (blend with background at the very rim)
-      float edge = smoothstep(1.0, 0.90, nd);
-      col = mix(bg, col, edge);
-
-      gl_FragColor = vec4(col, 1.0);
+      gl_FragColor = vec4(col, edge);
     }`;
 
-  function compile(type, src) {
-    const s = g.createShader(type);
-    g.shaderSource(s, src); g.compileShader(s);
-    if (!g.getShaderParameter(s, g.COMPILE_STATUS)) { console.error(g.getShaderInfoLog(s)); return null; }
+  function compile(type, src){
+    const s=g.createShader(type);
+    g.shaderSource(s,src); g.compileShader(s);
+    if(!g.getShaderParameter(s,g.COMPILE_STATUS)){console.error(g.getShaderInfoLog(s));return null;}
     return s;
   }
-  const prog = g.createProgram();
-  g.attachShader(prog, compile(g.VERTEX_SHADER, vsrc));
-  g.attachShader(prog, compile(g.FRAGMENT_SHADER, fsrc));
-  g.linkProgram(prog);
-  if (!g.getProgramParameter(prog, g.LINK_STATUS)) { console.error(g.getProgramInfoLog(prog)); return null; }
-  g.useProgram(prog);
+  function makeProgram(vs,fs){
+    const p=g.createProgram();
+    g.attachShader(p,compile(g.VERTEX_SHADER,vs));
+    g.attachShader(p,compile(g.FRAGMENT_SHADER,fs));
+    g.linkProgram(p);
+    if(!g.getProgramParameter(p,g.LINK_STATUS)){console.error(g.getProgramInfoLog(p));return null;}
+    return p;
+  }
 
-  const buf = g.createBuffer();
-  g.bindBuffer(g.ARRAY_BUFFER, buf);
+  const bgProg   = makeProgram(bgVsrc,   bgFsrc);
+  const ballProg = makeProgram(ballVsrc, ballFsrc);
+
+  // Full-screen quad buffer
+  const fsqBuf = g.createBuffer();
+  g.bindBuffer(g.ARRAY_BUFFER, fsqBuf);
   g.bufferData(g.ARRAY_BUFFER, new Float32Array([-1,-1, 1,-1, -1,1, 1,1]), g.STATIC_DRAW);
-  const aPos = g.getAttribLocation(prog, 'aPos');
-  g.enableVertexAttribArray(aPos);
-  g.vertexAttribPointer(aPos, 2, g.FLOAT, false, 0, 0);
+
+  // Per-ball tight quad buffer (updated each draw)
+  const ballBuf = g.createBuffer();
 
   return {
-    g,
-    uRes:    g.getUniformLocation(prog, 'uRes'),
-    uBall:   g.getUniformLocation(prog, 'uBall'),
-    uRadius: g.getUniformLocation(prog, 'uRadius'),
+    g, bgProg, ballProg, fsqBuf, ballBuf,
+    bg_aPos:    g.getAttribLocation(bgProg,   'aPos'),
+    bg_uRes:    g.getUniformLocation(bgProg,  'uRes'),
+    ball_aPos:  g.getAttribLocation(ballProg,  'aPos'),
+    ball_uRes:  g.getUniformLocation(ballProg, 'uRes'),
+    ball_uBall: g.getUniformLocation(ballProg, 'uBall'),
+    ball_uRad:  g.getUniformLocation(ballProg, 'uRadius'),
   };
 }
 
 function renderGL() {
   if (!glState) return;
-  const { g, uRes, uBall, uRadius } = glState;
-  g.viewport(0, 0, W, H);
-  g.uniform2f(uRes, W, H);
+  const { g, bgProg, ballProg, fsqBuf, ballBuf,
+          bg_aPos, bg_uRes,
+          ball_aPos, ball_uRes, ball_uBall, ball_uRad } = glState;
 
-  // Pass 1: draw background grid (ball position off-screen so no refraction)
+  g.viewport(0,0,W,H);
+
+  // ── Pass A: background grid ───────────────────────────────────────────────
   g.disable(g.BLEND);
-  g.uniform2f(uBall, -9999, -9999);
-  g.uniform1f(uRadius, 0.0);
+  g.useProgram(bgProg);
+  g.bindBuffer(g.ARRAY_BUFFER, fsqBuf);
+  g.enableVertexAttribArray(bg_aPos);
+  g.vertexAttribPointer(bg_aPos, 2, g.FLOAT, false, 0, 0);
+  g.uniform2f(bg_uRes, W, H);
   g.drawArrays(g.TRIANGLE_STRIP, 0, 4);
 
-  // Pass 2: draw each ball on top, blending so only the disc overwrites
-  // The shader already outputs the background colour outside the radius,
-  // so we use a custom approach: re-render each ball but only keep pixels
-  // inside its disc. We do this by enabling BLEND with a mask trick:
-  // outside-ball pixels the shader returns the same bg colour, so
-  // they naturally composite correctly without blending.
-  // We simply draw each ball as a full-screen quad — the background areas
-  // are identical so overwriting them is visually transparent.
-  // Order matters: larger balls first so smaller ones appear on top.
-  const sorted = [...balls].sort((a, b) => b.radius - a.radius);
+  // ── Pass B: balls (largest first, so smaller ones appear on top) ──────────
+  g.enable(g.BLEND);
+  g.blendFunc(g.SRC_ALPHA, g.ONE_MINUS_SRC_ALPHA);
+  g.useProgram(ballProg);
+  g.uniform2f(ball_uRes, W, H);
+
+  const sorted = [...balls].sort((a,b) => b.radius - a.radius);
   for (const { body, radius } of sorted) {
-    g.uniform2f(uBall, body.position.x, body.position.y);
-    g.uniform1f(uRadius, radius);
+    const cx = body.position.x, cy = body.position.y;
+    const ext = radius * 1.45;   // disc + halo in px
+
+    // Convert tight AABB to clip space
+    const x0 = (cx-ext)/W*2-1,  x1 = (cx+ext)/W*2-1;
+    const y0 = 1-(cy+ext)/H*2,  y1 = 1-(cy-ext)/H*2;
+
+    // Two triangles (TRIANGLE_STRIP): TL, TR, BL, BR
+    const verts = new Float32Array([x0,y1, x1,y1, x0,y0, x1,y0]);
+    g.bindBuffer(g.ARRAY_BUFFER, ballBuf);
+    g.bufferData(g.ARRAY_BUFFER, verts, g.DYNAMIC_DRAW);
+    g.enableVertexAttribArray(ball_aPos);
+    g.vertexAttribPointer(ball_aPos, 2, g.FLOAT, false, 0, 0);
+
+    g.uniform2f(ball_uBall, cx, cy);
+    g.uniform1f(ball_uRad, radius);
     g.drawArrays(g.TRIANGLE_STRIP, 0, 4);
   }
-}
-
-// ── Tone.js audio ──────────────────────────────────────────────────────────
-let synth, reverb, lastHitTime = 0;
-
-async function initAudio() {
-  if (toneReady) return;
-  await Tone.start();
-
-  reverb = new Tone.Reverb({ decay: 0.5, wet: 0.2 }).toDestination();
-  await reverb.ready;
-
-  // MetalSynth produces a mid-high "tink" clearly audible on phone speakers.
-  // We'll pitch-shift per impact so small/fast = higher, large/slow = lower.
-  synth = new Tone.MetalSynth({
-    frequency  : 400,
-    envelope   : { attack: 0.001, decay: 0.06, release: 0.08 },
-    harmonicity: 3.1,
-    modulationIndex: 16,
-    resonance  : 2800,
-    octaves    : 1.2,
-    volume     : -10,
-  }).connect(reverb);
-
-  toneReady = true;
-}
-
-// ballBodies set — for fast lookup in collision handler
-function getBallBodies() { return new Set(balls.map(b => b.body)); }
-
-function onCollision(event) {
-  if (!toneReady || !synth) return;
-  const now = performance.now();
-  if (now - lastHitTime < 35) return;
-
-  const ballSet = getBallBodies();
-
-  // Find highest-speed ball collision
-  let bestSpeed = 0, bestBall = null;
-  for (const pair of event.pairs) {
-    const isA = ballSet.has(pair.bodyA);
-    const isB = ballSet.has(pair.bodyB);
-    if (!isA && !isB) continue;
-    const bBody = isA ? pair.bodyA : pair.bodyB;
-    const other = isA ? pair.bodyB : pair.bodyA;
-    const { collision } = pair;
-    const rvx = bBody.velocity.x - other.velocity.x;
-    const rvy = bBody.velocity.y - other.velocity.y;
-    const spd = Math.abs(rvx * collision.normal.x + rvy * collision.normal.y);
-    if (spd > bestSpeed) { bestSpeed = spd; bestBall = bBody; }
-  }
-
-  if (!bestBall || bestSpeed < 0.8) return;
-  lastHitTime = now;
-
-  // Find radius of this ball
-  const entry  = balls.find(b => b.body === bestBall);
-  const radius = entry ? entry.radius : RADIUS_MAX;
-
-  // Pitch: larger ball = lower, faster = higher
-  const tSpd  = Math.min(1, Math.max(0, (bestSpeed - 1) / 20));
-  const tSize = (radius - RADIUS_MIN) / (RADIUS_MAX - RADIUS_MIN); // 0=small,1=big
-  const freqHz = 800 - tSize * 500 + tSpd * 300; // 300..800 Hz range
-  synth.frequency.value = freqHz;
-  synth.volume.value = -22 + tSpd * 14;
-  synth.triggerAttackRelease('16n');
 }
 
 // ── Build world ────────────────────────────────────────────────────────────
@@ -497,13 +414,12 @@ function buildWorld() {
   glCanvas.width = W; glCanvas.height = H;
   glState = initGL();
 
-  engine = Engine.create({ gravity: { x: 0, y: 0, scale: 0.001 } });
-  // Increase solver iterations for accurate multi-ball collisions.
-  // In Matter.js 0.19 these live on the engine's resolver/detector directly.
+  engine = Engine.create({ gravity: { x:0, y:0, scale:0.001 } });
   engine.positionIterations   = 10;
   engine.velocityIterations   = 8;
   engine.constraintIterations = 4;
-  const wo = { isStatic: true, restitution: RESTITUTION, friction: FRICTION };
+
+  const wo = { isStatic:true, restitution:RESTITUTION, friction:FRICTION };
   Composite.add(engine.world, [
     Bodies.rectangle(W/2,    H+WALL/2,   W+WALL*2, WALL,     wo),
     Bodies.rectangle(W/2,   -WALL/2,     W+WALL*2, WALL,     wo),
@@ -511,27 +427,18 @@ function buildWorld() {
     Bodies.rectangle(W+WALL/2,  H/2,     WALL, H+WALL*2,     wo),
   ]);
 
-  // Create 20 balls with random sizes, scattered so they don't overlap at start
   balls = [];
   const cols = 5, rows = 4;
-  const cellW = W / cols, cellH = H / rows;
+  const cellW = W/cols, cellH = H/rows;
   for (let i = 0; i < NUM_BALLS; i++) {
-    const col = i % cols, row = Math.floor(i / cols);
-    // Random radius between RADIUS_MIN and RADIUS_MAX
-    const radius = RADIUS_MIN + Math.random() * (RADIUS_MAX - RADIUS_MIN);
-    // Position: centre of grid cell + small random jitter
-    const jx = (Math.random() - 0.5) * cellW * 0.5;
-    const jy = (Math.random() - 0.5) * cellH * 0.5;
-    const bx = cellW * (col + 0.5) + jx;
-    const by = cellH * (row + 0.5) + jy;
-    // density constant → mass ∝ area (πr²), so big balls feel heavier naturally.
-    // Restitution slightly lower for big balls (more inelastic, like a heavy sphere).
-    const rNorm = (radius - RADIUS_MIN) / (RADIUS_MAX - RADIUS_MIN); // 0=small,1=big
+    const col = i%cols, row = Math.floor(i/cols);
+    const radius = RADIUS_MIN + Math.random()*(RADIUS_MAX-RADIUS_MIN);
+    const bx = cellW*(col+0.5) + (Math.random()-0.5)*cellW*0.5;
+    const by = cellH*(row+0.5) + (Math.random()-0.5)*cellH*0.5;
+    const rNorm = (radius-RADIUS_MIN)/(RADIUS_MAX-RADIUS_MIN);
     const body = Bodies.circle(bx, by, radius, {
-      restitution: RESTITUTION - rNorm * 0.08,
-      friction   : FRICTION,
-      frictionAir: FRICTION_AIR,
-      density    : 0.002,
+      restitution: RESTITUTION - rNorm*0.08,
+      friction: FRICTION, frictionAir: FRICTION_AIR, density: 0.002,
     });
     balls.push({ body, radius });
     Composite.add(engine.world, body);
@@ -539,9 +446,6 @@ function buildWorld() {
 
   runner = Runner.create();
   Runner.run(runner, engine);
-
-  // Register collision sound
-  Matter.Events.on(engine, 'collisionStart', onCollision);
 
   if (drawLoopId) cancelAnimationFrame(drawLoopId);
   drawLoop();
@@ -552,80 +456,76 @@ function drawLoop() {
   drawLoopId = requestAnimationFrame(drawLoop);
   tickFPS();
 
-  // Apply gravity with correct orientation remapping
   const { gx, gy } = computeGravity(ax, ay);
   engine.gravity.x = gx;
   engine.gravity.y = gy;
 
   renderGL();
 
-  // 2D canvas: corner brackets + trail
   const c = ctx2d;
-  c.clearRect(0, 0, W, H);
+  c.clearRect(0,0,W,H);
 
+  // Corner brackets
   const br = 22;
   c.strokeStyle = 'rgba(0,255,120,0.11)';
   c.lineWidth = 1;
   [[0,0],[W,0],[0,H],[W,H]].forEach(([cx,cy]) => {
-    const sx = cx===0?1:-1, sy = cy===0?1:-1;
+    const sx=cx===0?1:-1, sy=cy===0?1:-1;
     c.beginPath();
-    c.moveTo(cx+sx*br, cy); c.lineTo(cx, cy); c.lineTo(cx, cy+sy*br);
+    c.moveTo(cx+sx*br,cy); c.lineTo(cx,cy); c.lineTo(cx,cy+sy*br);
     c.stroke();
   });
 
-  // Draw trail for each ball
+  // Trails
   for (const { body, radius } of balls) {
-    const bx = body.position.x, by = body.position.y;
-    const spd = Math.hypot(body.velocity.x, body.velocity.y);
-    if (spd > 1.5) {
-      const nx = -body.velocity.x/spd, ny = -body.velocity.y/spd;
-      const tl = Math.min(spd * 3.5, 70);
-      const tg = c.createLinearGradient(bx, by, bx+nx*tl, by+ny*tl);
-      tg.addColorStop(0, 'rgba(180,220,255,0.15)');
-      tg.addColorStop(1, 'rgba(180,220,255,0)');
+    const bx=body.position.x, by=body.position.y;
+    const spd=Math.hypot(body.velocity.x,body.velocity.y);
+    if (spd>1.5) {
+      const nx=-body.velocity.x/spd, ny=-body.velocity.y/spd;
+      const tl=Math.min(spd*3.5,70);
+      const tg=c.createLinearGradient(bx,by,bx+nx*tl,by+ny*tl);
+      tg.addColorStop(0,'rgba(180,220,255,0.15)');
+      tg.addColorStop(1,'rgba(180,220,255,0)');
       c.beginPath();
-      c.moveTo(bx+nx*radius*0.85, by+ny*radius*0.85);
-      c.lineTo(bx+nx*tl, by+ny*tl);
-      c.lineWidth = radius * 0.6; c.lineCap = 'round';
-      c.strokeStyle = tg; c.stroke();
+      c.moveTo(bx+nx*radius*0.85,by+ny*radius*0.85);
+      c.lineTo(bx+nx*tl,by+ny*tl);
+      c.lineWidth=radius*0.6; c.lineCap='round';
+      c.strokeStyle=tg; c.stroke();
     }
   }
 
   updateDebug();
 }
 
-// ── Accelerometer ──────────────────────────────────────────�───────────────
+// ── Accelerometer ──────────────────────────────────────────────────────────
 function startSensor() {
   function onMotion(e) {
-    const a = e.accelerationIncludingGravity;
-    if (!a) return;
-    ax = ax + ALPHA * ((a.x || 0) - ax);
-    ay = ay + ALPHA * ((a.y || 0) - ay);
-    az = az + ALPHA * ((a.z || 0) - az);
-    sensorOk = true;
+    const a=e.accelerationIncludingGravity;
+    if(!a) return;
+    ax=ax+ALPHA*((a.x||0)-ax);
+    ay=ay+ALPHA*((a.y||0)-ay);
+    az=az+ALPHA*((a.z||0)-az);
+    sensorOk=true;
   }
-  if (typeof DeviceMotionEvent !== 'undefined' &&
-      typeof DeviceMotionEvent.requestPermission === 'function') {
+  if (typeof DeviceMotionEvent!=='undefined' &&
+      typeof DeviceMotionEvent.requestPermission==='function') {
     DeviceMotionEvent.requestPermission()
-      .then(s => { if (s==='granted') window.addEventListener('devicemotion', onMotion); })
+      .then(s=>{ if(s==='granted') window.addEventListener('devicemotion',onMotion); })
       .catch(()=>{});
-  } else if (typeof DeviceMotionEvent !== 'undefined') {
-    window.addEventListener('devicemotion', onMotion);
+  } else if (typeof DeviceMotionEvent!=='undefined') {
+    window.addEventListener('devicemotion',onMotion);
   }
 }
 
-// ── Resize / orientation change ────────────────────────────────────────────
-window.addEventListener('resize', () => { checkOrientation(); buildWorld(); });
+window.addEventListener('resize', ()=>{ checkOrientation(); buildWorld(); });
 
-// ── Start ──────────────────────────────────────────────────────────────────
-document.getElementById('btn-start').addEventListener('click', () => {
+document.getElementById('btn-start').addEventListener('click', ()=>{
   lockLandscape();
   hideBrowserUI();
-  document.getElementById('permission-overlay').style.display = 'none';
+  document.getElementById('permission-overlay').style.display='none';
   checkOrientation();
   buildWorld();
   startSensor();
-  initAudio();   // must be called from user gesture
 });
 </script>
 </body>
