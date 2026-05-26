@@ -8,34 +8,74 @@
 <style>
   * { margin: 0; padding: 0; box-sizing: border-box; }
 
-  body {
+  html, body {
     background: #0a0a0f;
     overflow: hidden;
-    width: 100vw;
-    height: 100dvh;
+    width: 100%;
+    height: 100%;
     font-family: 'Courier New', monospace;
     touch-action: none;
   }
+
+  /* ── Forzar apaisado via CSS cuando el navegador no soporte Screen Orientation API ── */
+  @media screen and (orientation: portrait) {
+    #rotate-msg {
+      display: flex !important;
+    }
+  }
+
+  #rotate-msg {
+    display: none;
+    position: fixed;
+    inset: 0;
+    background: #0a0a0f;
+    z-index: 999;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 20px;
+    color: #00ff78;
+    font-family: 'Courier New', monospace;
+    text-align: center;
+    padding: 32px;
+  }
+  #rotate-msg svg { animation: spin 2s linear infinite; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  #rotate-msg p { font-size: 14px; opacity: 0.7; letter-spacing: 0.1em; }
 
   #debug {
     position: fixed;
     top: 0; left: 0; right: 0;
     z-index: 100;
-    background: rgba(0, 255, 120, 0.08);
-    border-bottom: 1px solid rgba(0, 255, 120, 0.25);
-    padding: 4px 8px;
+    background: rgba(0, 255, 120, 0.07);
+    border-bottom: 1px solid rgba(0, 255, 120, 0.2);
+    padding: 3px 8px;
     font-size: 10px;
     color: #00ff78;
-    letter-spacing: 0.03em;
+    letter-spacing: 0.04em;
     white-space: nowrap;
     overflow: hidden;
-    text-overflow: ellipsis;
-    line-height: 1.6;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 0;
     backdrop-filter: blur(4px);
+    line-height: 1.5;
   }
 
-  #debug span { opacity: 0.6; margin-right: 2px; }
-  #debug b { opacity: 1; margin-right: 12px; }
+  .dbg-group {
+    display: flex;
+    align-items: center;
+    gap: 3px;
+    flex: 1;
+    justify-content: center;
+  }
+  .dbg-group:first-child { justify-content: flex-start; }
+  .dbg-group:last-child  { justify-content: flex-end; }
+
+  .dbg-label { opacity: 0.45; font-size: 9px; text-transform: uppercase; }
+  .dbg-val   { opacity: 1; font-weight: bold; font-size: 10px; min-width: 38px; text-align: right; }
+  .dbg-sep   { opacity: 0.2; margin: 0 4px; }
 
   canvas {
     display: block;
@@ -57,20 +97,20 @@
   }
 
   #permission-overlay h1 {
-    font-size: 22px;
+    font-size: 20px;
     color: #00ff78;
     font-family: 'Courier New', monospace;
-    letter-spacing: 0.1em;
+    letter-spacing: 0.12em;
     text-align: center;
   }
 
   #permission-overlay p {
-    font-size: 14px;
+    font-size: 13px;
     color: rgba(0,255,120,0.6);
     font-family: 'Courier New', monospace;
     text-align: center;
     line-height: 1.7;
-    max-width: 280px;
+    max-width: 320px;
   }
 
   #btn-start {
@@ -86,14 +126,20 @@
     transition: background 0.2s, color 0.2s;
     -webkit-tap-highlight-color: transparent;
   }
-
-  #btn-start:active {
-    background: #00ff78;
-    color: #0a0a0f;
-  }
+  #btn-start:active { background: #00ff78; color: #0a0a0f; }
 </style>
 </head>
 <body>
+
+<!-- Mensaje de rotación manual (fallback si Screen Orientation API falla) -->
+<div id="rotate-msg">
+  <svg width="48" height="48" viewBox="0 0 48 48" fill="none" xmlns="http://www.w3.org/2000/svg">
+    <rect x="10" y="6" width="28" height="36" rx="4" stroke="#00ff78" stroke-width="2"/>
+    <path d="M32 2 L38 8 L32 14" stroke="#00ff78" stroke-width="2" fill="none" stroke-linecap="round"/>
+    <line x1="38" y1="8" x2="24" y2="8" stroke="#00ff78" stroke-width="2" stroke-linecap="round"/>
+  </svg>
+  <p>GIRA EL MÓVIL<br>A MODO APAISADO</p>
+</div>
 
 <div id="permission-overlay">
   <h1>BALL PHYSICS</h1>
@@ -105,46 +151,54 @@
 <canvas id="c"></canvas>
 
 <script>
-// ── Matter.js aliases ──────────────────────────────────────────────────────
-const { Engine, Render, Runner, Bodies, Body, Composite,
-        Events, Vector }  = Matter;
+const { Engine, Runner, Bodies, Body, Composite } = Matter;
 
 // ── Constants ──────────────────────────────────────────────────────────────
-const WALL     = 40;       // thickness of boundary walls
-const RADIUS   = 22;       // ball radius
-const G_SCALE  = 9.8;      // gravity multiplier (maps accel m/s² to pixels/frame²)
-const RESTITUTION = 0.72;  // bounciness
+const WALL        = 40;
+const RADIUS      = 22;
+const RESTITUTION = 0.72;
 const FRICTION    = 0.001;
 const FRICTION_AIR = 0.012;
+const ALPHA       = 0.18;   // low-pass filter
 
 // ── State ──────────────────────────────────────────────────────────────────
 let W, H;
-let engine, runner, ball;
-let ax = 0, ay = 0, az = 0;   // raw accelerometer values (m/s²)
+let engine, runner, ball, ctx;
+let ax = 0, ay = 0, az = 0;
 let sensorOk = false;
 let fps = 0, lastTime = performance.now(), frameCount = 0;
+let drawLoopId = null;
 
-// ── Debug bar ──────────────────────────────────────────────────────────────
+// ── Debug bar (distribuida a lo ancho) ────────────────────────────────────
 const dbg = document.getElementById('debug');
+
+function v(label, val) {
+  return `<span class="dbg-group"><span class="dbg-label">${label}</span><span class="dbg-val">${val}</span></span>`;
+}
+function sep() { return '<span class="dbg-sep">|</span>'; }
+
 function updateDebug() {
-  const bx  = ball ? ball.position.x.toFixed(1) : '-';
-  const by  = ball ? ball.position.y.toFixed(1) : '-';
-  const vx  = ball ? ball.velocity.x.toFixed(2) : '-';
-  const vy  = ball ? ball.velocity.y.toFixed(2) : '-';
-  const spd = ball ? Math.hypot(ball.velocity.x, ball.velocity.y).toFixed(2) : '-';
+  const bx  = ball ? ball.position.x.toFixed(0) : '--';
+  const by  = ball ? ball.position.y.toFixed(0) : '--';
+  const vx  = ball ? ball.velocity.x.toFixed(1) : '--';
+  const vy  = ball ? ball.velocity.y.toFixed(1) : '--';
+  const spd = ball ? Math.hypot(ball.velocity.x, ball.velocity.y).toFixed(1) : '--';
+  const gx  = engine ? engine.gravity.x.toFixed(2) : '--';
+  const gy  = engine ? engine.gravity.y.toFixed(2) : '--';
 
   dbg.innerHTML =
-    `<span>SENSOR</span><b>${sensorOk ? '✓ OK' : '✗ OFF'}</b>` +
-    `<span>AX</span><b>${ax.toFixed(2)}</b>` +
-    `<span>AY</span><b>${ay.toFixed(2)}</b>` +
-    `<span>AZ</span><b>${az.toFixed(2)}</b>` +
-    `<span>POS</span><b>${bx},${by}</b>` +
-    `<span>VEL</span><b>${vx},${vy}</b>` +
-    `<span>SPD</span><b>${spd}</b>` +
-    `<span>FPS</span><b>${fps}</b>`;
+    v('SENSOR', sensorOk ? '✓ OK' : '✗ OFF') + sep() +
+    v('AX', ax.toFixed(1)) + sep() +
+    v('AY', ay.toFixed(1)) + sep() +
+    v('AZ', az.toFixed(1)) + sep() +
+    v('GX', gx) + sep() + v('GY', gy) + sep() +
+    v('POS', `${bx},${by}`) + sep() +
+    v('VEL', `${vx},${vy}`) + sep() +
+    v('SPD', spd) + sep() +
+    v('FPS', fps);
 }
 
-// ── FPS counter ────────────────────────────────────────────────────────────
+// ── FPS ────────────────────────────────────────────────────────────────────
 function tickFPS() {
   frameCount++;
   const now = performance.now();
@@ -155,207 +209,186 @@ function tickFPS() {
   }
 }
 
-// ── Build world ────────────────────────────────────────────────────────────
+// ── Build / rebuild world ──────────────────────────────────────────────────
 function buildWorld() {
+  if (runner) Runner.stop(runner);
+  if (engine) Composite.clear(engine.world, false);
+
   W = window.innerWidth;
   H = window.innerHeight;
 
-  // Canvas
-  const canvas = document.getElementById('c');
+  const canvas  = document.getElementById('c');
   canvas.width  = W;
   canvas.height = H;
+  ctx = canvas.getContext('2d');
 
-  // Engine
-  engine = Engine.create({
-    gravity: { x: 0, y: 1, scale: 0.001 }
-  });
+  engine = Engine.create({ gravity: { x: 0, y: 0, scale: 0.001 } });
 
-  // Custom renderer using Canvas 2D (lighter than Matter's WebGL)
-  const ctx = canvas.getContext('2d');
-
-  // Walls: bottom, top, left, right
-  const wallOpts = { isStatic: true, restitution: RESTITUTION, friction: FRICTION, label: 'wall' };
+  const wo = { isStatic: true, restitution: RESTITUTION, friction: FRICTION };
   const walls = [
-    Bodies.rectangle(W/2, H + WALL/2,     W + WALL*2, WALL,     wallOpts), // bottom
-    Bodies.rectangle(W/2, -WALL/2,         W + WALL*2, WALL,     wallOpts), // top
-    Bodies.rectangle(-WALL/2, H/2,         WALL,       H + WALL*2, wallOpts), // left
-    Bodies.rectangle(W + WALL/2, H/2,      WALL,       H + WALL*2, wallOpts), // right
+    Bodies.rectangle(W/2,  H + WALL/2, W + WALL*2, WALL,       wo), // bottom
+    Bodies.rectangle(W/2,  -WALL/2,    W + WALL*2, WALL,       wo), // top
+    Bodies.rectangle(-WALL/2,   H/2,   WALL, H + WALL*2,       wo), // left
+    Bodies.rectangle(W + WALL/2, H/2,  WALL, H + WALL*2,       wo), // right
   ];
 
-  // Ball
-  ball = Bodies.circle(W/2, H/2, RADIUS, {
+  const DBG_H = dbg.offsetHeight || 22;
+  ball = Bodies.circle(W/2, H/2 + DBG_H/2, RADIUS, {
     restitution: RESTITUTION,
     friction: FRICTION,
     frictionAir: FRICTION_AIR,
     density: 0.002,
-    label: 'ball'
   });
 
   Composite.add(engine.world, [...walls, ball]);
 
-  // Runner
   runner = Runner.create();
   Runner.run(runner, engine);
 
-  // Render loop
-  function draw() {
-    tickFPS();
+  if (drawLoopId) cancelAnimationFrame(drawLoopId);
+  drawLoop();
+}
 
-    // Apply accelerometer → gravity
-    // Device: ax positive = tilt right, ay positive = tilt toward user (face up)
-    // In portrait: ax maps to world X, ay maps to world Y (but sign depends on orientation)
-    const gx =  ax / G_SCALE;   // normalized -1..1
-    const gy = -ay / G_SCALE;   // flip: tilt top away = ball falls down
+// ── Main render loop ───────────────────────────────────────────────────────
+function drawLoop() {
+  tickFPS();
 
-    engine.gravity.x = gx;
-    engine.gravity.y = gy;
+  // ── Gravity mapping (landscape mode, home button right = standard) ──────
+  // In landscape-right (home right):
+  //   device X axis → screen Y  (tilt top/bottom)
+  //   device Y axis → screen X  (tilt left/right)
+  //   az tells us if face-up or face-down
+  //
+  // accelerationIncludingGravity in landscape-right:
+  //   a.x: tilting top-toward-user → positive = gravity pulls "up" on screen
+  //   a.y: tilting right-toward-user → positive = gravity pulls "right" on screen
+  //
+  // We want: tilt right → ball goes right (gx positive)
+  //          tilt top-up → ball goes up (gy negative)
+  //
+  // Empirically on most browsers in landscape:
+  //   gx = -ay / 9.8   (ay positive when right side down → gx positive = go right ✓ but inverted, so negate)
+  //   gy =  ax / 9.8   (ax positive when top toward user → gy positive = go down, but we want tilt-top → go up)
+  //
+  // The user reported physics were INVERTED, so we flip both signs:
+  const G = 9.8;
+  engine.gravity.x =  ay / G;   // was -ay, now +ay (fixed inversion)
+  engine.gravity.y = -ax / G;   // was +ax, now -ax (fixed inversion)
 
-    // Draw
-    ctx.clearRect(0, 0, W, H);
+  // ── Draw ──────────────────────────────────────────────────────────────────
+  ctx.clearRect(0, 0, W, H);
+  ctx.fillStyle = '#0a0a0f';
+  ctx.fillRect(0, 0, W, H);
 
-    // Background
-    ctx.fillStyle = '#0a0a0f';
-    ctx.fillRect(0, 0, W, H);
-
-    // Corner decorations
-    const corner = 20;
-    ctx.strokeStyle = 'rgba(0,255,120,0.15)';
-    ctx.lineWidth = 1;
-    [[0,0],[W,0],[0,H],[W,H]].forEach(([cx,cy]) => {
-      const sx = cx === 0 ? 1 : -1;
-      const sy = cy === 0 ? 1 : -1;
-      ctx.beginPath();
-      ctx.moveTo(cx + sx * corner, cy);
-      ctx.lineTo(cx, cy);
-      ctx.lineTo(cx, cy + sy * corner);
-      ctx.stroke();
-    });
-
-    // Ball shadow
-    const bx = ball.position.x;
-    const by = ball.position.y;
-
-    const shadowGrad = ctx.createRadialGradient(bx + 4, by + 4, 0, bx + 4, by + 4, RADIUS * 1.8);
-    shadowGrad.addColorStop(0, 'rgba(0,255,120,0.12)');
-    shadowGrad.addColorStop(1, 'rgba(0,0,0,0)');
+  // Corner brackets
+  const br = 22;
+  ctx.strokeStyle = 'rgba(0,255,120,0.13)';
+  ctx.lineWidth = 1;
+  [[0,0],[W,0],[0,H],[W,H]].forEach(([cx,cy]) => {
+    const sx = cx === 0 ? 1 : -1, sy = cy === 0 ? 1 : -1;
     ctx.beginPath();
-    ctx.arc(bx + 4, by + 4, RADIUS * 1.8, 0, Math.PI * 2);
-    ctx.fillStyle = shadowGrad;
-    ctx.fill();
+    ctx.moveTo(cx + sx*br, cy); ctx.lineTo(cx, cy); ctx.lineTo(cx, cy + sy*br);
+    ctx.stroke();
+  });
 
-    // Ball glow
-    const glowGrad = ctx.createRadialGradient(bx, by, 0, bx, by, RADIUS * 2.5);
-    glowGrad.addColorStop(0, 'rgba(0,255,120,0.18)');
-    glowGrad.addColorStop(1, 'rgba(0,0,0,0)');
+  const bx = ball.position.x, by = ball.position.y;
+
+  // Glow
+  const glow = ctx.createRadialGradient(bx, by, 0, bx, by, RADIUS * 2.6);
+  glow.addColorStop(0, 'rgba(0,255,120,0.17)');
+  glow.addColorStop(1, 'rgba(0,0,0,0)');
+  ctx.beginPath(); ctx.arc(bx, by, RADIUS*2.6, 0, Math.PI*2);
+  ctx.fillStyle = glow; ctx.fill();
+
+  // Trail
+  const spd = Math.hypot(ball.velocity.x, ball.velocity.y);
+  if (spd > 1.5) {
+    const nx = -ball.velocity.x/spd, ny = -ball.velocity.y/spd;
+    const tl = Math.min(spd * 3.5, 70);
+    const tg = ctx.createLinearGradient(bx, by, bx+nx*tl, by+ny*tl);
+    tg.addColorStop(0, 'rgba(0,255,120,0.32)');
+    tg.addColorStop(1, 'rgba(0,255,120,0)');
     ctx.beginPath();
-    ctx.arc(bx, by, RADIUS * 2.5, 0, Math.PI * 2);
-    ctx.fillStyle = glowGrad;
-    ctx.fill();
-
-    // Ball body
-    const ballGrad = ctx.createRadialGradient(bx - RADIUS*0.3, by - RADIUS*0.3, 1, bx, by, RADIUS);
-    ballGrad.addColorStop(0, '#afffdb');
-    ballGrad.addColorStop(0.45, '#00ff78');
-    ballGrad.addColorStop(1, '#006630');
-    ctx.beginPath();
-    ctx.arc(bx, by, RADIUS, 0, Math.PI * 2);
-    ctx.fillStyle = ballGrad;
-    ctx.fill();
-
-    // Ball specular
-    ctx.beginPath();
-    ctx.arc(bx - RADIUS*0.28, by - RADIUS*0.28, RADIUS*0.22, 0, Math.PI * 2);
-    ctx.fillStyle = 'rgba(255,255,255,0.55)';
-    ctx.fill();
-
-    // Velocity trail
-    const spd = Math.hypot(ball.velocity.x, ball.velocity.y);
-    if (spd > 1.5) {
-      const nx = -ball.velocity.x / spd;
-      const ny = -ball.velocity.y / spd;
-      const trailLen = Math.min(spd * 3.5, 60);
-      const trailGrad = ctx.createLinearGradient(bx, by, bx + nx*trailLen, by + ny*trailLen);
-      trailGrad.addColorStop(0, 'rgba(0,255,120,0.35)');
-      trailGrad.addColorStop(1, 'rgba(0,255,120,0)');
-      ctx.beginPath();
-      ctx.moveTo(bx + nx*RADIUS*0.8, by + ny*RADIUS*0.8);
-      ctx.lineTo(bx + nx*trailLen, by + ny*trailLen);
-      ctx.lineWidth = RADIUS * 0.9;
-      ctx.lineCap = 'round';
-      ctx.strokeStyle = trailGrad;
-      ctx.stroke();
-    }
-
-    updateDebug();
-    requestAnimationFrame(draw);
+    ctx.moveTo(bx+nx*RADIUS*0.8, by+ny*RADIUS*0.8);
+    ctx.lineTo(bx+nx*tl, by+ny*tl);
+    ctx.lineWidth = RADIUS * 0.85; ctx.lineCap = 'round';
+    ctx.strokeStyle = tg; ctx.stroke();
   }
 
-  draw();
+  // Ball
+  const bg = ctx.createRadialGradient(bx-RADIUS*0.3, by-RADIUS*0.3, 1, bx, by, RADIUS);
+  bg.addColorStop(0, '#afffdb'); bg.addColorStop(0.45, '#00ff78'); bg.addColorStop(1, '#005828');
+  ctx.beginPath(); ctx.arc(bx, by, RADIUS, 0, Math.PI*2);
+  ctx.fillStyle = bg; ctx.fill();
+
+  // Specular
+  ctx.beginPath(); ctx.arc(bx-RADIUS*0.28, by-RADIUS*0.28, RADIUS*0.22, 0, Math.PI*2);
+  ctx.fillStyle = 'rgba(255,255,255,0.5)'; ctx.fill();
+
+  updateDebug();
+  drawLoopId = requestAnimationFrame(drawLoop);
+}
+
+// ── Screen Orientation: forzar landscape ──────────────────────────────────
+function lockLandscape() {
+  // Modern API
+  if (screen.orientation && screen.orientation.lock) {
+    screen.orientation.lock('landscape').catch(() => {});
+  }
+  // Older webkit
+  if (screen.lockOrientation) screen.lockOrientation('landscape');
+  if (screen.mozLockOrientation) screen.mozLockOrientation('landscape');
+  if (screen.msLockOrientation) screen.msLockOrientation('landscape');
 }
 
 // ── Accelerometer ──────────────────────────────────────────────────────────
 function startSensor() {
-  const ALPHA = 0.15; // low-pass filter coefficient
-
   function onMotion(e) {
     const a = e.accelerationIncludingGravity;
     if (!a) return;
-    // Low-pass filter to reduce jitter
     ax = ax + ALPHA * ((a.x || 0) - ax);
     ay = ay + ALPHA * ((a.y || 0) - ay);
     az = az + ALPHA * ((a.z || 0) - az);
     sensorOk = true;
   }
 
-  // iOS 13+ requires permission
   if (typeof DeviceMotionEvent !== 'undefined' &&
       typeof DeviceMotionEvent.requestPermission === 'function') {
+    // iOS 13+
     DeviceMotionEvent.requestPermission()
-      .then(state => {
-        if (state === 'granted') window.addEventListener('devicemotion', onMotion);
-        else fallbackMouseGravity();
-      })
-      .catch(() => fallbackMouseGravity());
+      .then(s => {
+        if (s === 'granted') window.addEventListener('devicemotion', onMotion);
+        else fallbackPointer();
+      }).catch(fallbackPointer);
   } else if (typeof DeviceMotionEvent !== 'undefined') {
     window.addEventListener('devicemotion', onMotion);
-    // Mark sensor ok after first event or 1s timeout
-    setTimeout(() => { if (!sensorOk) fallbackMouseGravity(); }, 1000);
+    setTimeout(() => { if (!sensorOk) fallbackPointer(); }, 1200);
   } else {
-    fallbackMouseGravity();
+    fallbackPointer();
   }
 }
 
-// ── Fallback: mouse/touch tilt simulation ─────────────────────────────────
-function fallbackMouseGravity() {
+// ── Fallback pointer ───────────────────────────────────────────────────────
+function fallbackPointer() {
   sensorOk = false;
-  dbg.title = 'Sin acelerómetro – usa el ratón/touch para simular';
-
-  // Map pointer position → gravity
-  function onPointer(e) {
-    const cx = (e.clientX || (e.touches && e.touches[0].clientX) || W/2);
-    const cy = (e.clientY || (e.touches && e.touches[0].clientY) || H/2);
-    // Center = 0 gravity, edges = ±9.8
-    ax = ((cx / W) - 0.5) * 2 * 9.8;
-    ay = -((cy / H) - 0.5) * 2 * 9.8;
+  function onPtr(e) {
+    const cx = e.clientX ?? e.touches?.[0]?.clientX ?? W/2;
+    const cy = e.clientY ?? e.touches?.[0]?.clientY ?? H/2;
+    // Map center→0, edge→±9.8; mirror to match corrected gravity signs
+    ay =  ((cx / W) - 0.5) * 2 * 9.8;
+    ax = -((cy / H) - 0.5) * 2 * 9.8;
     sensorOk = true;
   }
-
-  window.addEventListener('mousemove', onPointer);
-  window.addEventListener('touchmove', onPointer, { passive: true });
+  window.addEventListener('mousemove', onPtr);
+  window.addEventListener('touchmove', onPtr, { passive: true });
 }
 
-// ── Handle resize ──────────────────────────────────────────────────────────
-window.addEventListener('resize', () => {
-  // Rebuild world on orientation change
-  if (engine) {
-    Composite.clear(engine.world);
-    Runner.stop(runner);
-  }
-  buildWorld();
-});
+// ── Resize ────────────────────────────────────────────────────────────────
+window.addEventListener('resize', buildWorld);
 
-// ── Start button ───────────────────────────────────────────────────────────
+// ── Start ─────────────────────────────────────────────────────────────────
 document.getElementById('btn-start').addEventListener('click', () => {
+  lockLandscape();
   document.getElementById('permission-overlay').style.display = 'none';
   buildWorld();
   startSensor();
