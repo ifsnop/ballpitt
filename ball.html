@@ -151,6 +151,21 @@ function buildWalls(){
 }
 
 // ── Ball factory ────────────────────────────────────────────────────────────
+// Palette of soft tints — saturated enough to notice, pale enough to keep the glass look
+const BALL_TINTS = [
+  [1.00, 0.35, 0.35], // coral red
+  [1.00, 0.60, 0.20], // amber
+  [1.00, 0.90, 0.25], // yellow
+  [0.40, 0.90, 0.40], // lime green
+  [0.25, 0.80, 0.75], // teal
+  [0.30, 0.65, 1.00], // sky blue
+  [0.55, 0.35, 1.00], // violet
+  [1.00, 0.35, 0.80], // pink
+  [0.90, 0.55, 0.30], // orange
+  [0.35, 1.00, 0.60], // mint
+];
+let tintIndex = 0;
+
 function makeBall(bx, by, radius){
   const rn = (radius-RADIUS_MIN)/(RADIUS_MAX-RADIUS_MIN);
   const body = Bodies.circle(bx, by, radius, {
@@ -158,7 +173,9 @@ function makeBall(bx, by, radius){
     friction: FRICTION, frictionAir: FRICTION_AIR, density: 0.002,
   });
   Composite.add(engine.world, body);
-  return {body, radius};
+  const tint = BALL_TINTS[tintIndex % BALL_TINTS.length];
+  tintIndex++;
+  return {body, radius, tint};
 }
 
 // ── Spawn queue ────────────────────────────────────────────────────────────
@@ -219,7 +236,7 @@ function initGL(){
   const bVS=`attribute vec2 aPos;varying vec2 vPx;uniform vec2 uRes;
     void main(){vPx=(aPos*.5+.5)*uRes;vPx.y=uRes.y-vPx.y;gl_Position=vec4(aPos,0.,1.);}`;
   const bFS=`precision highp float;
-    varying vec2 vPx;uniform vec2 uRes,uBall;uniform float uR,uDrag;
+    varying vec2 vPx;uniform vec2 uRes,uBall;uniform float uR,uDrag;uniform vec3 uTint;
     float grid(vec2 p){float s=34.,w=.65;vec2 g=mod(p,s);return max(smoothstep(w+1.,w,abs(g.y)),smoothstep(w+1.,w,abs(g.x)));}
     vec3 bg(vec2 p){return mix(vec3(.04,.04,.072),vec3(.155,.195,.27),grid(p));}
     void main(){
@@ -228,7 +245,8 @@ function initGL(){
       if(dist>r){
         float t=(dist-r)/hw;
         float h=exp(-t*t*4.5)*(0.42+uDrag*.35);
-        vec3 hc=mix(vec3(.5,.75,1.),vec3(1.,.85,.3),uDrag);
+        // Halo tinted with ball colour
+        vec3 hc=mix(uTint*0.85+vec3(0.15), vec3(1.,.85,.3), uDrag);
         gl_FragColor=vec4(hc*h,h);return;
       }
       float nd=dist/r,nz=sqrt(max(0.,1.-nd*nd));
@@ -239,7 +257,12 @@ function initGL(){
       else{float ct=sqrt(1.-s2t);vec3 rv=eta*vec3(0.,0.,-1.)+(eta*ci-ct)*N;off=rv.xy*(-1.5*r/rv.z);}
       vec2 sp=clamp(uBall+off,vec2(0.),uRes);
       vec3 col=bg(vec2(sp.x,uRes.y-sp.y));
-      col+=vec3(.7,.88,1.)*.05*(.3+.7*(1.-nz));
+      // Tint: stronger near the edge (like coloured glass), subtle at centre
+      float tintStr = 0.18 + 0.22*(1.0-nz);
+      col = mix(col, col*uTint*1.4, tintStr);
+      // Faint interior ambient matching the tint
+      col+=uTint*.04*(.3+.7*(1.-nz));
+      // Speculars (white, so they override the tint naturally)
       vec2 s1=d-vec2(-r*.36,-r*.36);col+=exp(-dot(s1,s1)/(2.*(r*.19)*(r*.19)))*.20;
       vec2 s2=d+vec2(r*.2,r*.26);  col+=exp(-dot(s2,s2)/(2.*(r*.048)*(r*.048)))*.45;
       float e=smoothstep(1.,.9,nd);
@@ -275,12 +298,13 @@ function initGL(){
     bC:  g.getUniformLocation(bP,'uBall'),
     bRad:g.getUniformLocation(bP,'uR'),
     bDrg:g.getUniformLocation(bP,'uDrag'),
+    bTnt:g.getUniformLocation(bP,'uTint'),
   };
 }
 
 function renderGL(){
   if (!glState) return;
-  const {g,bgP,bP,fsqB,bB,bgA,bgR,bA,bR,bC,bRad,bDrg}=glState;
+  const {g,bgP,bP,fsqB,bB,bgA,bgR,bA,bR,bC,bRad,bDrg,bTnt}=glState;
   g.viewport(0,0,W,H);
 
   // Pass A: background
@@ -308,6 +332,8 @@ function renderGL(){
     g.enableVertexAttribArray(bA); g.vertexAttribPointer(bA,2,g.FLOAT,false,0,0);
     g.uniform2f(bC,cx,cy); g.uniform1f(bRad,radius);
     g.uniform1f(bDrg, drag?.entry===entry ? 1.0 : 0.0);
+    const t = entry.tint || [0.7,0.88,1.0];
+    g.uniform3f(bTnt, t[0], t[1], t[2]);
     g.drawArrays(g.TRIANGLE_STRIP,0,4);
   }
 }
