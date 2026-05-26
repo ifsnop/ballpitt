@@ -481,7 +481,15 @@ function buildWorld() {
   glCanvas.width = W; glCanvas.height = H;
   glState = initGL();
 
-  engine = Engine.create({ gravity: { x: 0, y: 0, scale: 0.001 } });
+  engine = Engine.create({
+    gravity: { x: 0, y: 0, scale: 0.001 },
+    // More solver iterations → accurate multi-body stacking and chain collisions.
+    // Default is positionIterations=6, velocityIterations=4, constraintIterations=2.
+    // Doubling velocity iterations fixes energy loss in ball-on-ball pileups.
+    positionIterations  : 10,
+    velocityIterations  : 8,
+    constraintIterations: 4,
+  });
   const wo = { isStatic: true, restitution: RESTITUTION, friction: FRICTION };
   Composite.add(engine.world, [
     Bodies.rectangle(W/2,    H+WALL/2,   W+WALL*2, WALL,     wo),
@@ -503,9 +511,15 @@ function buildWorld() {
     const jy = (Math.random() - 0.5) * cellH * 0.5;
     const bx = cellW * (col + 0.5) + jx;
     const by = cellH * (row + 0.5) + jy;
+    // density constant → mass ∝ area (πr²), so big balls feel heavier naturally.
+    // Restitution slightly lower for big balls (more inelastic, like a heavy sphere).
+    const rNorm = (radius - RADIUS_MIN) / (RADIUS_MAX - RADIUS_MIN); // 0=small,1=big
     const body = Bodies.circle(bx, by, radius, {
-      restitution: RESTITUTION, friction: FRICTION,
-      frictionAir: FRICTION_AIR, density: 0.002,
+      restitution: RESTITUTION - rNorm * 0.08,
+      friction   : FRICTION,
+      frictionAir: FRICTION_AIR,
+      density    : 0.002,   // uniform density → mass = density * area automatically
+      slop       : 0.5,     // tighter penetration tolerance (default 0.05 is too loose for piles)
     });
     balls.push({ body, radius });
     Composite.add(engine.world, body);
@@ -582,7 +596,7 @@ function startSensor() {
       typeof DeviceMotionEvent.requestPermission === 'function') {
     DeviceMotionEvent.requestPermission()
       .then(s => { if (s==='granted') window.addEventListener('devicemotion', onMotion); })
-      .catch(()=>{});
+      .catch()=>{});
   } else if (typeof DeviceMotionEvent !== 'undefined') {
     window.addEventListener('devicemotion', onMotion);
   }
@@ -597,7 +611,7 @@ document.getElementById('btn-start').addEventListener('click', () => {
   hideBrowserUI();
   document.getElementById('permission-overlay').style.display = 'none';
   checkOrientation();
-  uildWorld();
+  buildWorld();
   startSensor();
   initAudio();   // must be called from user gesture
 });
