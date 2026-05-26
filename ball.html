@@ -154,6 +154,8 @@ function screenAngle(){
 
 function currentGravity(){
   if (!IS_MOBILE) return {gx:0, gy:1};
+  // Fallback while sensor hasn't fired yet: gravity straight down
+  if (!sensorOk)  return {gx:0, gy:1};
   const G = 9.8, ang = screenAngle();
   if (ang < 45 || ang >= 315) return { gx:  ax/G, gy: -ay/G }; // portrait
   if (ang < 135)              return { gx:  ay/G, gy:  ax/G }; // landscape home-left
@@ -523,7 +525,7 @@ function mainLoop(){
 
   renderGL();
   drawOverlay();
-  updateDebug();
+  updteDebug();
 }
 
 // ═══════════════════════════════════════════════════════════════════
@@ -540,12 +542,15 @@ function buildWorld(){
 
   W=window.innerWidth; H=window.innerHeight;
 
-  // Resize canvases
-  const glC  =document.getElementById('gl');
-  const c2dC =document.getElementById('c2d');
-  glC.width=W;  glC.height=H;
-  c2dC.width=W; c2dC.height=H;
-  ctx2d=c2dC.getContext('2d');
+  // Resize canvases — set both the pixel buffer size AND the CSS display size
+  // so drawings in logical CSS-px coords match exactly on high-DPI mobile screens.
+  const glC  = document.getElementById('gl');
+  const c2dC = document.getElementById('c2d');
+  glC.width  = W;  glC.height  = H;
+  glC.style.width  = W+'px'; glC.style.height  = H+'px';
+  c2dC.width = W;  c2dC.height = H;
+  c2dC.style.width = W+'px'; c2dC.style.height = H+'px';
+  ctx2d = c2dC.getContext('2d');
   glState=initGL();
 
   // Physics engine
