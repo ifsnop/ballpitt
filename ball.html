@@ -93,7 +93,9 @@ const { Engine, Runner, Bodies, Composite } = Matter;
 
 // ── Constants ──────────────────────────────────────────────────────────────
 const WALL         = 40;
-const RADIUS       = 44;
+const RADIUS_MAX   = 44;
+const RADIUS_MIN   = 22;
+const NUM_BALLS    = 20;
 const RESTITUTION  = 0.88;
 const FRICTION     = 0.0005;
 const FRICTION_AIR = 0.003;
@@ -101,14 +103,15 @@ const ALPHA        = 0.18;
 
 // ── State ──────────────────────────────────────────────────────────────────
 let W, H;
-let engine, runner, ball;
+let engine, runner;
+let balls = [];            // [{ body, radius }, ...]
 let ctx2d, glState;
-let ax = 0, ay = 0, az = 0;   // raw filtered sensor values
+let ax = 0, ay = 0, az = 0;
 let sensorOk = false;
 let fps = 0, lastTime = performance.now(), frameCount = 0;
 let drawLoopId = null;
 let hasGoneLandscape = false;
-let toneReady = false;   // Tone.js context started
+let toneReady = false;
 
 // ── Orientation angle ──────────────────────────────────────────────────────
 // We read screen.orientation.angle (0, 90, 180, 270) to remap axes.
@@ -175,11 +178,12 @@ function dg(l, v) { return `<span class="dg"><span class="dl">${l}</span><span c
 const ds = '<span class="ds">|</span>';
 
 function updateDebug() {
-  const bx  = ball ? fmt0(ball.position.x) : '--';
-  const by  = ball ? fmt0(ball.position.y) : '--';
-  const vx  = ball ? fmt1(ball.velocity.x) : '--';
-  const vy  = ball ? fmt1(ball.velocity.y) : '--';
-  const spd = ball ? fmt1(Math.hypot(ball.velocity.x, ball.velocity.y)) : '--';
+  const b   = balls[0]?.body;
+  const bx  = b ? fmt0(b.position.x) : '--';
+  const by  = b ? fmt0(b.position.y) : '--';
+  const vx  = b ? fmt1(b.velocity.x) : '--';
+  const vy  = b ? fmt1(b.velocity.y) : '--';
+  const spd = b ? fmt1(Math.hypot(b.velocity.x, b.velocity.y)) : '--';
   const gx  = engine ? fmt2(engine.gravity.x) : '--';
   const gy  = engine ? fmt2(engine.gravity.y) : '--';
   const ang = getOrientAngle();
@@ -387,71 +391,78 @@ function renderGL() {
   const { g, uRes, uBall, uRadius } = glState;
   g.viewport(0, 0, W, H);
   g.uniform2f(uRes, W, H);
-  g.uniform2f(uBall, ball ? ball.position.x : W/2, ball ? ball.position.y : H/2);
-  g.uniform1f(uRadius, RADIUS);
-  g.drawArrays(g.TRIANGLE_STRIP, 0, 4);
+  // Render each ball in a separate draw call (update uniforms per ball)
+  for (const { body, radius } of balls) {
+    g.uniform2f(uBall, body.position.x, body.position.y);
+    g.uniform1f(uRadius, radius);
+    g.drawArrays(g.TRIANGLE_STRIP, 0, 4);
+  }
 }
 
 // ── Tone.js audio ──────────────────────────────────────────────────────────
-// synth: short percussive click — pitched to impact speed
-// reverb: small room feel so it doesn't sound completely dry
 let synth, reverb, lastHitTime = 0;
 
 async function initAudio() {
   if (toneReady) return;
-  await Tone.start();   // must be called from a user gesture
+  await Tone.start();
 
-  reverb = new Tone.Reverb({ decay: 0.6, wet: 0.25 }).toDestination();
+  reverb = new Tone.Reverb({ decay: 0.5, wet: 0.2 }).toDestination();
   await reverb.ready;
 
-  // MembraneSynth gives a nice rounded "thud" — like a bubble hitting glass
-  synth = new Tone.MembraneSynth({
-    pitchDecay : 0.018,
-    octaves    : 4,
-    envelope   : { attack: 0.001, decay: 0.08, sustain: 0.0, release: 0.12 },
-    volume     : -8,
+  // MetalSynth produces a mid-high "tink" clearly audible on phone speakers.
+  // We'll pitch-shift per impact so small/fast = higher, large/slow = lower.
+  synth = new Tone.MetalSynth({
+    frequency  : 400,
+    envelope   : { attack: 0.001, decay: 0.06, release: 0.08 },
+    harmonicity: 3.1,
+    modulationIndex: 16,
+    resonance  : 2800,
+    octaves    : 1.2,
+    volume     : -10,
   }).connect(reverb);
 
   toneReady = true;
 }
 
-// Called on every Matter.js collision event
+// ballBodies set — for fast lookup in collision handler
+function getBallBodies() { return new Set(balls.map(b => b.body)); }
+
 function onCollision(event) {
   if (!toneReady || !synth) return;
-
   const now = performance.now();
-  if (now - lastHitTime < 40) return;   // debounce — max ~25 hits/s
+  if (now - lastHitTime < 35) return;
+
+  const ballSet = getBallBodies();
+
+  // Find highest-speed ball collision
+  let bestSpeed = 0, bestBall = null;
+  for (const pair of event.pairs) {
+    const isA = ballSet.has(pair.bodyA);
+    const isB = ballSet.has(pair.bodyB);
+    if (!isA && !isB) continue;
+    const bBody = isA ? pair.bodyA : pair.bodyB;
+    const other = isA ? pair.bodyB : pair.bodyA;
+    const { collision } = pair;
+    const rvx = bBody.velocity.x - other.velocity.x;
+    const rvy = bBody.velocity.y - other.velocity.y;
+    const spd = Math.abs(rvx * collision.normal.x + rvy * collision.normal.y);
+    if (spd > bestSpeed) { bestSpeed = spd; bestBall = bBody; }
+  }
+
+  if (!bestBall || bestSpeed < 0.8) return;
   lastHitTime = now;
 
-  // Find the pair that involves our ball
-  const pair = event.pairs.find(p =>
-    p.bodyA === ball || p.bodyB === ball
-  );
-  if (!pair) return;
+  // Find radius of this ball
+  const entry  = balls.find(b => b.body === bestBall);
+  const radius = entry ? entry.radius : RADIUS_MAX;
 
-  // Impact speed: relative velocity projected on collision normal
-  const { collision } = pair;
-  const relVel = pair.bodyA === ball
-    ? { x: pair.bodyA.velocity.x - pair.bodyB.velocity.x,
-        y: pair.bodyA.velocity.y - pair.bodyB.velocity.y }
-    : { x: pair.bodyB.velocity.x - pair.bodyA.velocity.x,
-        y: pair.bodyB.velocity.y - pair.bodyA.velocity.y };
-  const speed = Math.abs(
-    relVel.x * collision.normal.x + relVel.y * collision.normal.y
-  );
-
-  if (speed < 0.8) return;   // ignore micro-taps when ball is resting
-
-  // Map speed → pitch: slow = low thud (~C2), fast = higher tap (~C4)
-  const minSpd = 1, maxSpd = 22;
-  const t = Math.min(1, Math.max(0, (speed - minSpd) / (maxSpd - minSpd)));
-  const notes = ['C2','D2','F2','G2','A2','C3','D3','F3','G3','A3','C4'];
-  const note  = notes[Math.round(t * (notes.length - 1))];
-
-  // Volume scales with impact — quiet grazes, loud slams
-  const vol = -28 + t * 20;   // -28 dB … -8 dB
-  synth.volume.value = vol;
-  synth.triggerAttackRelease(note, '32n');
+  // Pitch: larger ball = lower, faster = higher
+  const tSpd  = Math.min(1, Math.max(0, (bestSpeed - 1) / 20));
+  const tSize = (radius - RADIUS_MIN) / (RADIUS_MAX - RADIUS_MIN); // 0=small,1=big
+  const freqHz = 800 - tSize * 500 + tSpd * 300; // 300..800 Hz range
+  synth.frequency.value = freqHz;
+  synth.volume.value = -22 + tSpd * 14;
+  synth.triggerAttackRelease('16n');
 }
 
 // ── Build world ────────────────────────────────────────────────────────────
@@ -479,11 +490,26 @@ function buildWorld() {
     Bodies.rectangle(W+WALL/2,  H/2,     WALL, H+WALL*2,     wo),
   ]);
 
-  ball = Bodies.circle(W/2, H/2, RADIUS, {
-    restitution: RESTITUTION, friction: FRICTION,
-    frictionAir: FRICTION_AIR, density: 0.002,
-  });
-  Composite.add(engine.world, ball);
+  // Create 20 balls with random sizes, scattered so they don't overlap at start
+  balls = [];
+  const cols = 5, rows = 4;
+  const cellW = W / cols, cellH = H / rows;
+  for (let i = 0; i < NUM_BALLS; i++) {
+    const col = i % cols, row = Math.floor(i / cols);
+    // Random radius between RADIUS_MIN and RADIUS_MAX
+    const radius = RADIUS_MIN + Math.random() * (RADIUS_MAX - RADIUS_MIN);
+    // Position: centre of grid cell + small random jitter
+    const jx = (Math.random() - 0.5) * cellW * 0.5;
+    const jy = (Math.random() - 0.5) * cellH * 0.5;
+    const bx = cellW * (col + 0.5) + jx;
+    const by = cellH * (row + 0.5) + jy;
+    const body = Bodies.circle(bx, by, radius, {
+      restitution: RESTITUTION, friction: FRICTION,
+      frictionAir: FRICTION_AIR, density: 0.002,
+    });
+    balls.push({ body, radius });
+    Composite.add(engine.world, body);
+  }
 
   runner = Runner.create();
   Runner.run(runner, engine);
@@ -521,19 +547,20 @@ function drawLoop() {
     c.stroke();
   });
 
-  if (ball) {
-    const bx = ball.position.x, by = ball.position.y;
-    const spd = Math.hypot(ball.velocity.x, ball.velocity.y);
+  // Draw trail for each ball
+  for (const { body, radius } of balls) {
+    const bx = body.position.x, by = body.position.y;
+    const spd = Math.hypot(body.velocity.x, body.velocity.y);
     if (spd > 1.5) {
-      const nx = -ball.velocity.x/spd, ny = -ball.velocity.y/spd;
+      const nx = -body.velocity.x/spd, ny = -body.velocity.y/spd;
       const tl = Math.min(spd * 3.5, 70);
       const tg = c.createLinearGradient(bx, by, bx+nx*tl, by+ny*tl);
       tg.addColorStop(0, 'rgba(180,220,255,0.15)');
       tg.addColorStop(1, 'rgba(180,220,255,0)');
       c.beginPath();
-      c.moveTo(bx+nx*RADIUS*0.85, by+ny*RADIUS*0.85);
+      c.moveTo(bx+nx*radius*0.85, by+ny*radius*0.85);
       c.lineTo(bx+nx*tl, by+ny*tl);
-      c.lineWidth = RADIUS * 0.6; c.lineCap = 'round';
+      c.lineWidth = radius * 0.6; c.lineCap = 'round';
       c.strokeStyle = tg; c.stroke();
     }
   }
@@ -570,7 +597,7 @@ document.getElementById('btn-start').addEventListener('click', () => {
   hideBrowserUI();
   document.getElementById('permission-overlay').style.display = 'none';
   checkOrientation();
-  buildWorld();
+  uildWorld();
   startSensor();
   initAudio();   // must be called from user gesture
 });
