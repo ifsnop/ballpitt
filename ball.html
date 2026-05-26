@@ -53,14 +53,12 @@
     font-size: 10px;
     color: #00ff78;
     letter-spacing: 0.04em;
-    white-space: nowrap;
-    overflow: hidden;
     display: flex;
-    justify-content: space-between;
+    flex-wrap: wrap;
     align-items: center;
     gap: 0;
     backdrop-filter: blur(4px);
-    line-height: 1.5;
+    line-height: 1.6;
   }
 
   .dbg-group {
@@ -272,8 +270,8 @@ function drawLoop() {
   //
   // The user reported physics were INVERTED, so we flip both signs:
   const G = 9.8;
-  engine.gravity.x =  ay / G;   // was -ay, now +ay (fixed inversion)
-  engine.gravity.y = -ax / G;   // was +ax, now -ax (fixed inversion)
+  engine.gravity.x =  ay / G;
+  engine.gravity.y =  ax / G;   // ax invertido: +ax → caída hacia abajo
 
   // ── Draw ──────────────────────────────────────────────────────────────────
   ctx.clearRect(0, 0, W, H);
@@ -293,37 +291,82 @@ function drawLoop() {
 
   const bx = ball.position.x, by = ball.position.y;
 
-  // Glow
-  const glow = ctx.createRadialGradient(bx, by, 0, bx, by, RADIUS * 2.6);
-  glow.addColorStop(0, 'rgba(0,255,120,0.17)');
-  glow.addColorStop(1, 'rgba(0,0,0,0)');
-  ctx.beginPath(); ctx.arc(bx, by, RADIUS*2.6, 0, Math.PI*2);
-  ctx.fillStyle = glow; ctx.fill();
+  // ── Soap bubble ────────────────────────────────────────────────────────
+  // Outer glow / ambient
+  const outerGlow = ctx.createRadialGradient(bx, by, RADIUS*0.5, bx, by, RADIUS*3);
+  outerGlow.addColorStop(0, 'rgba(180,230,255,0.06)');
+  outerGlow.addColorStop(1, 'rgba(0,0,0,0)');
+  ctx.beginPath(); ctx.arc(bx, by, RADIUS*3, 0, Math.PI*2);
+  ctx.fillStyle = outerGlow; ctx.fill();
 
-  // Trail
+  // Trail (iridescent)
   const spd = Math.hypot(ball.velocity.x, ball.velocity.y);
   if (spd > 1.5) {
     const nx = -ball.velocity.x/spd, ny = -ball.velocity.y/spd;
     const tl = Math.min(spd * 3.5, 70);
     const tg = ctx.createLinearGradient(bx, by, bx+nx*tl, by+ny*tl);
-    tg.addColorStop(0, 'rgba(0,255,120,0.32)');
-    tg.addColorStop(1, 'rgba(0,255,120,0)');
+    tg.addColorStop(0, 'rgba(180,230,255,0.22)');
+    tg.addColorStop(1, 'rgba(180,230,255,0)');
     ctx.beginPath();
     ctx.moveTo(bx+nx*RADIUS*0.8, by+ny*RADIUS*0.8);
     ctx.lineTo(bx+nx*tl, by+ny*tl);
-    ctx.lineWidth = RADIUS * 0.85; ctx.lineCap = 'round';
+    ctx.lineWidth = RADIUS * 0.7; ctx.lineCap = 'round';
     ctx.strokeStyle = tg; ctx.stroke();
   }
 
-  // Ball
-  const bg = ctx.createRadialGradient(bx-RADIUS*0.3, by-RADIUS*0.3, 1, bx, by, RADIUS);
-  bg.addColorStop(0, '#afffdb'); bg.addColorStop(0.45, '#00ff78'); bg.addColorStop(1, '#005828');
+  // Thin iridescent rim (stroke)
   ctx.beginPath(); ctx.arc(bx, by, RADIUS, 0, Math.PI*2);
-  ctx.fillStyle = bg; ctx.fill();
+  const rimGrad = ctx.createLinearGradient(bx-RADIUS, by-RADIUS, bx+RADIUS, by+RADIUS);
+  rimGrad.addColorStop(0,   'rgba(255,120,200,0.55)');
+  rimGrad.addColorStop(0.25,'rgba(120,200,255,0.55)');
+  rimGrad.addColorStop(0.5, 'rgba(180,255,180,0.45)');
+  rimGrad.addColorStop(0.75,'rgba(255,220,100,0.45)');
+  rimGrad.addColorStop(1,   'rgba(200,140,255,0.55)');
+  ctx.strokeStyle = rimGrad;
+  ctx.lineWidth = 1.5;
+  ctx.stroke();
 
-  // Specular
-  ctx.beginPath(); ctx.arc(bx-RADIUS*0.28, by-RADIUS*0.28, RADIUS*0.22, 0, Math.PI*2);
-  ctx.fillStyle = 'rgba(255,255,255,0.5)'; ctx.fill();
+  // Inner transparent fill (very subtle)
+  const innerFill = ctx.createRadialGradient(bx, by, 0, bx, by, RADIUS);
+  innerFill.addColorStop(0,   'rgba(200,240,255,0.10)');
+  innerFill.addColorStop(0.7, 'rgba(180,220,255,0.04)');
+  innerFill.addColorStop(1,   'rgba(160,200,255,0.13)');
+  ctx.beginPath(); ctx.arc(bx, by, RADIUS, 0, Math.PI*2);
+  ctx.fillStyle = innerFill; ctx.fill();
+
+  // Thin interior colour band near the edge (iridescence)
+  const bandGrad = ctx.createRadialGradient(bx, by, RADIUS*0.72, bx, by, RADIUS*0.95);
+  bandGrad.addColorStop(0, 'rgba(100,210,255,0)');
+  bandGrad.addColorStop(0.4,'rgba(255,100,200,0.10)');
+  bandGrad.addColorStop(0.7,'rgba(100,255,200,0.10)');
+  bandGrad.addColorStop(1, 'rgba(255,200,80,0.08)');
+  ctx.beginPath(); ctx.arc(bx, by, RADIUS*0.95, 0, Math.PI*2);
+  ctx.fillStyle = bandGrad; ctx.fill();
+
+  // Primary specular — large soft highlight top-left
+  const spec1 = ctx.createRadialGradient(
+    bx - RADIUS*0.38, by - RADIUS*0.38, 0,
+    bx - RADIUS*0.38, by - RADIUS*0.38, RADIUS*0.52
+  );
+  spec1.addColorStop(0,   'rgba(255,255,255,0.72)');
+  spec1.addColorStop(0.5, 'rgba(255,255,255,0.18)');
+  spec1.addColorStop(1,   'rgba(255,255,255,0)');
+  ctx.beginPath(); ctx.arc(bx - RADIUS*0.38, by - RADIUS*0.38, RADIUS*0.52, 0, Math.PI*2);
+  ctx.fillStyle = spec1; ctx.fill();
+
+  // Secondary specular — tiny sharp dot
+  ctx.beginPath(); ctx.arc(bx - RADIUS*0.22, by - RADIUS*0.28, RADIUS*0.09, 0, Math.PI*2);
+  ctx.fillStyle = 'rgba(255,255,255,0.9)'; ctx.fill();
+
+  // Bottom-right faint counter-reflection
+  const spec2 = ctx.createRadialGradient(
+    bx + RADIUS*0.42, by + RADIUS*0.42, 0,
+    bx + RADIUS*0.42, by + RADIUS*0.42, RADIUS*0.3
+  );
+  spec2.addColorStop(0, 'rgba(200,240,255,0.28)');
+  spec2.addColorStop(1, 'rgba(200,240,255,0)');
+  ctx.beginPath(); ctx.arc(bx + RADIUS*0.42, by + RADIUS*0.42, RADIUS*0.3, 0, Math.PI*2);
+  ctx.fillStyle = spec2; ctx.fill();
 
   updateDebug();
   drawLoopId = requestAnimationFrame(drawLoop);
