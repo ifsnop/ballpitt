@@ -18,21 +18,6 @@
   .dl { opacity:0.4; font-size:9px; } .dv { font-weight:bold; font-size:10px; min-width:34px; }
   .ds { opacity:0.18; margin:0 5px; }
   #fps-box { position:fixed; bottom:8px; right:10px; z-index:100; font-family:'Courier New',monospace; font-size:10px; color:#00ff78; opacity:0.55; pointer-events:none; }
-  canvas { display:block; position:fixed; top:0; left:0; }
-  #gl { z-index:1; } #c2d { z-index:2; }
-  #overlay {
-    position:fixed; inset:0; background:#0a0a0f; z-index:300;
-    display:flex; flex-direction:column; align-items:center; justify-content:center; gap:24px; padding:32px;
-  }
-  #overlay h1 { font-size:20px; color:#00ff78; letter-spacing:0.12em; text-align:center; }
-  #overlay p  { font-size:13px; color:rgba(0,255,120,0.6); text-align:center; line-height:1.7; max-width:320px; }
-  #btn-start {
-    background:transparent; border:1.5px solid #00ff78; color:#00ff78;
-    font-family:'Courier New',monospace; font-size:13px; letter-spacing:0.15em;
-    padding:14px 36px; cursor:pointer; text-transform:uppercase;
-    -webkit-tap-highlight-color:transparent;
-  }
-  #btn-start:active { background:#00ff78; color:#0a0a0f; }
 </style>
 </head>
 <body>
@@ -41,12 +26,6 @@
 <canvas id="c2d"></canvas>
 <div id="debug">cargando...</div>
 <div id="fps-box">FPS —</div>
-
-<div id="overlay">
-  <h1>BALL PHYSICS</h1>
-  <p id="odesc">Cargando...</p>
-  <button id="btn-start">INICIAR</button>
-</div>
 
 <script>
 'use strict';
@@ -530,19 +509,10 @@ function startSensor(){
   }
 }
 
-// ── Resize ───────────────────────────────────────────────────────────────────
-window.addEventListener('resize', ()=>{ if(gameStarted) buildWorld(); });
+window.addEventListener('resize', buildWorld);
 
-// ── Init overlay ─────────────────────────────────────────────────────────────
-let gameStarted=false;
-document.getElementById('odesc').textContent = IS_DESKTOP
-  ? 'Gravedad fija hacia abajo. Arrastra bolas con el ratón. Las bolas escapan por las aperturas.'
-  : 'Inclina el móvil para mover las bolas. Las bolas escapan por las aperturas.';
-
-document.getElementById('btn-start').addEventListener('click', ()=>{
-  gameStarted=true;
-  document.getElementById('overlay').style.display='none';
-  if (!IS_DESKTOP){ lockLandscape(); goFullscreen(); }
+window.addEventListener('DOMContentLoaded', () => {
+  if (!IS_DESKTOP) { lockLandscape(); goFullscreen(); }
   buildWorld();
   startSensor();
   setupDrag();
