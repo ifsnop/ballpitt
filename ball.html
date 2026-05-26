@@ -8,8 +8,7 @@
 <style>
   * { margin:0; padding:0; box-sizing:border-box; }
   html, body {
-    background:#0a0a0f;
-    overflow:hidden;
+    background:#0a0a0f; overflow:hidden;
     width:100%; height:100%;
     font-family:'Courier New',monospace;
     touch-action:none;
@@ -24,8 +23,7 @@
     background:rgba(0,255,120,0.05);
     border-bottom:1px solid rgba(0,255,120,0.12);
     font-size:11px; color:#00ff78; letter-spacing:0.06em;
-    pointer-events:none;
-    backdrop-filter:blur(4px);
+    pointer-events:none; backdrop-filter:blur(4px);
   }
   #hud-left, #hud-right { display:flex; gap:12px; align-items:center; }
   .hv { opacity:0.4; font-size:9px; margin-right:2px; }
@@ -43,7 +41,6 @@
 <div id="hud">
   <div id="hud-left">
     <span><span class="hv">BOLAS </span><span class="hn" id="h-balls">0</span></span>
-    <span><span class="hv">COLA </span><span class="hn" id="h-queue">0</span></span>
     <span><span class="hv">SNS </span><span class="hn" id="h-sns">—</span></span>
   </div>
   <div id="hud-right">
@@ -55,29 +52,31 @@
 
 <script>
 'use strict';
-const { Engine, Runner, Bodies, Body, Composite, Events } = Matter;
+const { Engine, Runner, Bodies, Body, Composite } = Matter;
 
 // ═══════════════════════════════════════════
 // CONFIG
 // ═══════════════════════════════════════════
 const CFG = {
-  RADIUS_MAX   : 44,
-  RADIUS_MIN   : 16,
-  RESTITUTION  : 0.88,
-  FRICTION     : 0.0005,
-  FRICTION_AIR : 0.003,
-  DENSITY      : 0.002,
-  ACCEL_ALPHA  : 0.15,      // low-pass for accelerometer
-  SPAWN_DELAY  : 140,       // ms between spawns (fast!)
-  SPAWN_BURST  : 3,         // balls per burst
-  MAX_BALLS    : 80,        // soft cap to avoid GPU death
-  ESCAPE_MS    : 80,        // escape check interval
-  WALL_T       : 60,        // wall thickness
-  SIDE_GAP_FRAC: 0.85,      // side holes = 85% of screen height
-  TOP_SPAWNS   : 5,         // number of spawn slots across the top
+  RADIUS_MAX    : 44,
+  RADIUS_MIN    : 16,
+  RESTITUTION   : 0.88,
+  FRICTION      : 0.0005,
+  FRICTION_AIR  : 0.003,
+  DENSITY       : 0.002,
+  ACCEL_ALPHA   : 0.15,
+  SPAWN_DELAY   : 140,    // ms between spawn attempts
+  SPAWN_BURST   : 3,      // max balls per burst
+  MAX_BALLS     : 80,
+  ESCAPE_MS     : 80,
+  WALL_T        : 60,
+  // Exit gaps on the two "side" walls (perpendicular to gravity):
+  // 42.5% of the relevant dimension — half of the previous 85%
+  EXIT_GAP_FRAC : 0.425,
+  // Rebuild walls when gravity angle shifts more than this (radians)
+  WALL_REBUILD_THRESH: 0.15,
 };
 
-// Ball colours (RGB 0–1)
 const TINTS = [
   [1.00,0.35,0.35],[1.00,0.60,0.20],[1.00,0.90,0.25],
   [0.40,0.90,0.40],[0.25,0.80,0.75],[0.30,0.65,1.00],
@@ -91,15 +90,13 @@ let tintIdx = 0;
 // ═══════════════════════════════════════════
 let W, H;
 let engine, runner;
-let balls      = [];    // {body, radius, tint}
-let wallBodies = [];    // current wall bodies
+let balls      = [];
+let wallBodies = [];
 let glState    = null;
 let ctx2d      = null;
-let loopId     = null;
 
-// HUD elements
+// HUD
 const elBalls = document.getElementById('h-balls');
-const elQueue = document.getElementById('h-queue');
 const elSns   = document.getElementById('h-sns');
 const elGx    = document.getElementById('h-gx');
 const elGy    = document.getElementById('h-gy');
@@ -107,11 +104,19 @@ const elFps   = document.getElementById('fps-box');
 
 // Accelerometer
 let accelX = 0, accelY = 0, accelZ = 0;
-let sensorOk  = false;
-let sensorAttached = false;
+let sensorOk = false, sensorAttached = false;
+let signDetected = false, signFactor = 1;
+
+// Wall state — rebuilt when gravity direction changes enough
+let lastWallAngle = null;   // angle (atan2) at last wall build
+// Gap info for overlay (in screen coords)
+// Each gap: { x0,y0, x1,y1 } — the open segment on the wall edge
+let gapInfoLeft  = null;
+let gapInfoRight = null;
+let gapInfoTop   = null;
+let gapInfoBot   = null;
 
 // Spawn
-let spawnCounter = 0;   // always-growing queue
 let lastSpawnMs  = 0;
 let lastEscapeMs = 0;
 
@@ -122,9 +127,6 @@ let mX=0, mY=0, mVX=0, mVY=0;
 // FPS
 let fps=0, _fc=0, _ft=0;
 
-// Side gap info (for overlay drawing)
-let sideGapTop = 0, sideGapBot = 0;
-
 // ═══════════════════════════════════════════
 // DEVICE DETECTION
 // ═══════════════════════════════════════════
@@ -132,48 +134,31 @@ const IS_MOBILE = ('ontouchstart' in window) ||
   /Mobi|Android|iPhone|iPad|iPod/i.test(navigator.userAgent);
 
 // ═══════════════════════════════════════════
-// GRAVITY
-// Reads raw accelerometer (accelerationIncludingGravity).
-// The device gives us physical axis values; we map them to
-// screen-space using screen.orientation.angle.
-//
-// Convention (iOS and Android both):
-//   az > 0  → face-up
-//   On portrait upright:
-//     iOS:     ay ≈ -9.8
-//     Android: ay ≈ +9.8
-//
-// We detect the sign once and normalise so that
-// "ball falls toward physical bottom" is always gy > 0.
-//
-// Desktop fallback: gx=0, gy=1 (standard gravity down).
+// ACCELEROMETER
 // ═══════════════════════════════════════════
-let signDetected = false;
-let signFactor   = 1;   // +1 or -1
-
 function screenAngleDeg(){
   const a = (typeof screen.orientation !== 'undefined')
-    ? screen.orientation.angle
-    : (window.orientation || 0);
+    ? screen.orientation.angle : (window.orientation || 0);
   return ((+a) % 360 + 360) % 360;
 }
 
+// Returns {gx, gy} normalised so that the physical "down" direction
+// corresponds to positive gy (or positive gx for lateral tilt).
+// Desktop: fixed {gx:0, gy:1}.
 function gravity(){
   if (!IS_MOBILE || !sensorOk) return {gx:0, gy:1};
 
-  const G = 9.8;
+  const G   = 9.8;
   const ang = screenAngleDeg();
   let sgx, sgy;
 
-  // Map device axes to screen axes based on orientation
-  if      (ang < 45  || ang >= 315) { sgx =  accelX/G; sgy = -accelY/G; }  // portrait
-  else if (ang < 135)               { sgx =  accelY/G; sgy =  accelX/G; }  // landscape left
-  else if (ang < 225)               { sgx = -accelX/G; sgy =  accelY/G; }  // portrait inv
-  else                              { sgx = -accelY/G; sgy = -accelX/G; }  // landscape right
+  if      (ang < 45  || ang >= 315) { sgx =  accelX/G; sgy = -accelY/G; }
+  else if (ang < 135)               { sgx =  accelY/G; sgy =  accelX/G; }
+  else if (ang < 225)               { sgx = -accelX/G; sgy =  accelY/G; }
+  else                              { sgx = -accelY/G; sgy = -accelX/G; }
 
-  // Detect sign once: when phone is roughly face-up (az > 4)
-  // in portrait (ang < 45) gravity in screen coords must be downward (sgy > 0)
-  if (!signDetected && Math.abs(accelZ) > 4 && (ang < 45 || ang >= 315)) {
+  // Detect OS sign convention once (face-up portrait → gy should be > 0)
+  if (!signDetected && Math.abs(accelZ) > 4 && (ang < 45 || ang >= 315)){
     signFactor   = sgy >= 0 ? 1 : -1;
     signDetected = true;
   }
@@ -181,38 +166,26 @@ function gravity(){
   return { gx: sgx * signFactor, gy: sgy * signFactor };
 }
 
-// ═══════════════════════════════════════════
-// ACCELEROMETER SETUP
-// ═══════════════════════════════════════════
 function onMotion(e){
   const a = e.accelerationIncludingGravity;
   if (!a) return;
-  const alpha = CFG.ACCEL_ALPHA;
-  accelX += alpha * ((a.x || 0) - accelX);
-  accelY += alpha * ((a.y || 0) - accelY);
-  accelZ += alpha * ((a.z || 0) - accelZ);
+  const al = CFG.ACCEL_ALPHA;
+  accelX += al * ((a.x||0) - accelX);
+  accelY += al * ((a.y||0) - accelY);
+  accelZ += al * ((a.z||0) - accelZ);
   sensorOk = true;
 }
 
 function startSensor(){
-  if (!IS_MOBILE) { sensorOk = true; return; }
+  if (!IS_MOBILE){ sensorOk = true; return; }
   if (sensorAttached) return;
-
-  function attach(){
-    window.addEventListener('devicemotion', onMotion);
-    sensorAttached = true;
-  }
-
+  const attach = () => { window.addEventListener('devicemotion', onMotion); sensorAttached = true; };
   if (typeof DeviceMotionEvent !== 'undefined' &&
       typeof DeviceMotionEvent.requestPermission === 'function'){
-    // iOS 13+ needs user gesture
-    const ask = () => {
-      DeviceMotionEvent.requestPermission()
-        .then(r => { if (r === 'granted') attach(); })
-        .catch(() => {});
-    };
+    const ask = () => DeviceMotionEvent.requestPermission()
+      .then(r => { if (r==='granted') attach(); }).catch(()=>{});
     ask();
-    document.addEventListener('touchstart', () => ask(), {once: true});
+    document.addEventListener('touchstart', ()=>ask(), {once:true});
   } else if (typeof DeviceMotionEvent !== 'undefined'){
     attach();
   }
@@ -220,69 +193,164 @@ function startSensor(){
 
 // ═══════════════════════════════════════════
 // WALLS
-// Top: many small spawn slots (wall is mostly open at top,
-//      but we keep thin corner anchors so balls don't escape top).
-// Sides: large central gap (85% of height) for escape.
-// Bottom: solid.
+//
+// The world always has 4 walls. Which wall is "floor", "ceiling",
+// "left-side", "right-side" depends on the gravity vector:
+//
+//   "floor"   = wall the gravity vector points into  → solid, no gap
+//   "ceiling" = opposite wall                        → open (spawn entry), corner caps only
+//   "sides"   = the other two walls                  → EXIT_GAP_FRAC opening centred
+//
+// We quantise the gravity angle to one of 4 quadrants and only
+// rebuild walls when the quadrant (or dimension) actually changes,
+// so orientation changes are smooth.
+//
+// Gap coordinates are stored in screen space for the overlay.
 // ═══════════════════════════════════════════
-function buildWalls(){
+
+// Returns the dominant quadrant angle (0=down, π/2=right, π=up, -π/2=left)
+// snapped to the nearest 90°, as a float 0..2π.
+function gravAngle(gx, gy){
+  // atan2 of the gravity vector, measured from +Y axis (downward)
+  return Math.atan2(gx, gy); // ranges -π..π; 0 = straight down
+}
+
+function buildWalls(gx, gy){
   // Remove old walls
   for (const b of wallBodies) Composite.remove(engine.world, b);
   wallBodies = [];
+  gapInfoLeft = gapInfoRight = gapInfoTop = gapInfoBot = null;
 
   const T  = CFG.WALL_T;
   const wo = { isStatic:true, restitution:CFG.RESTITUTION, friction:CFG.FRICTION, label:'wall' };
 
-  // ── Top wall ───────────────────────────────────────────────────────
-  // We put a thin strip only at the very corners (10% each side)
-  // so balls can enter from almost anywhere across the top.
-  const topCapW = W * 0.10;
-  const topCapH = T * 0.6;
-  wallBodies.push(
-    Bodies.rectangle(topCapW/2,        -topCapH/2, topCapW, topCapH, wo),  // left corner cap
-    Bodies.rectangle(W - topCapW/2,    -topCapH/2, topCapW, topCapH, wo),  // right corner cap
-  );
+  // Snap gravity to one of 4 cardinal directions
+  const ang = gravAngle(gx, gy);   // -π..π, 0 = gravity pointing down (screen)
+  // Determine which screen edge is the "floor" (gravity target)
+  // ang ≈  0           → floor = bottom
+  // ang ≈  π/2 (90°)  → floor = right
+  // ang ≈ -π/2 (-90°) → floor = left
+  // ang ≈ ±π          → floor = top
+  let floorEdge; // 'bottom'|'top'|'left'|'right'
+  if (Math.abs(ang) < Math.PI/4)           floorEdge = 'bottom';
+  else if (ang >  Math.PI*3/4 || ang < -Math.PI*3/4) floorEdge = 'top';
+  else if (ang > 0)                         floorEdge = 'right';
+  else                                      floorEdge = 'left';
 
-  // ── Bottom wall ──────────────────────────────────────────────────
-  wallBodies.push(
-    Bodies.rectangle(W/2, H + T/2, W + T*2, T, wo)
-  );
+  // Ceiling = opposite of floor (spawn entry)
+  const ceilEdge = {bottom:'top', top:'bottom', left:'right', right:'left'}[floorEdge];
+  // Side edges = the remaining two
+  const allEdges = ['top','bottom','left','right'];
+  const sideEdges = allEdges.filter(e => e!==floorEdge && e!==ceilEdge);
 
-  // ── Side walls: gap = 85% of height, centred ─────────────────────
-  const gapH   = H * CFG.SIDE_GAP_FRAC;
-  const capH   = (H - gapH) / 2;   // height of each cap (top+bottom solid bit)
+  // Helper: make a solid wall segment as a Matter rectangle
+  // (cx,cy) = centre, (w,h) = size
+  const mk = (cx,cy,w,h) => Bodies.rectangle(cx,cy,w,h,wo);
 
-  sideGapTop = capH;
-  sideGapBot = capH + gapH;
+  // ── Floor: fully solid ──────────────────────────────────────────
+  if      (floorEdge==='bottom') wallBodies.push(mk(W/2, H+T/2,   W+T*2, T));
+  else if (floorEdge==='top')    wallBodies.push(mk(W/2, -T/2,    W+T*2, T));
+  else if (floorEdge==='left')   wallBodies.push(mk(-T/2, H/2,    T, H+T*2));
+  else                           wallBodies.push(mk(W+T/2, H/2,   T, H+T*2));
 
-  if (capH > 1) {
-    // Left side
-    wallBodies.push(
-      Bodies.rectangle(-T/2, capH/2,       T, capH, wo),
-      Bodies.rectangle(-T/2, sideGapBot + capH/2, T, capH, wo),
-    );
-    // Right side
-    wallBodies.push(
-      Bodies.rectangle(W+T/2, capH/2,      T, capH, wo),
-      Bodies.rectangle(W+T/2, sideGapBot + capH/2, T, capH, wo),
-    );
+  // ── Ceiling: corner caps only (balls spawn here) ────────────────
+  // Cap = 10% of the relevant dimension at each corner
+  if (ceilEdge==='top' || ceilEdge==='bottom'){
+    const capW = W * 0.10, capH = T * 0.5;
+    const y    = ceilEdge==='top' ? -capH/2 : H+capH/2;
+    wallBodies.push(mk(capW/2,   y, capW, capH));
+    wallBodies.push(mk(W-capW/2, y, capW, capH));
+  } else {
+    const capH = H * 0.10, capW = T * 0.5;
+    const x    = ceilEdge==='left' ? -capW/2 : W+capW/2;
+    wallBodies.push(mk(x, capH/2,   capW, capH));
+    wallBodies.push(mk(x, H-capH/2, capW, capH));
+  }
+
+  // ── Sides: EXIT_GAP_FRAC opening centred ───────────────────────
+  for (const edge of sideEdges){
+    if (edge==='left' || edge==='right'){
+      const x      = edge==='left' ? -T/2 : W+T/2;
+      const gapH   = H * CFG.EXIT_GAP_FRAC;
+      const capH   = (H - gapH) / 2;
+      const gapTop = capH;
+      const gapBot = H - capH;
+      if (capH > 1){
+        wallBodies.push(mk(x, capH/2,      T, capH));
+        wallBodies.push(mk(x, H-capH/2,    T, capH));
+      }
+      // Store for overlay
+      const info = { x0:edge==='left'?0:W, y0:gapTop, x1:edge==='left'?0:W, y1:gapBot, horiz:false };
+      if (edge==='left') gapInfoLeft = info; else gapInfoRight = info;
+    } else {
+      const y      = edge==='top' ? -T/2 : H+T/2;
+      const gapW   = W * CFG.EXIT_GAP_FRAC;
+      const capW   = (W - gapW) / 2;
+      const gapL   = capW;
+      const gapR   = W - capW;
+      if (capW > 1){
+        wallBodies.push(mk(capW/2,   y, capW, T));
+        wallBodies.push(mk(W-capW/2, y, capW, T));
+      }
+      const yScreen = edge==='top' ? 0 : H;
+      const info = { x0:gapL, y0:yScreen, x1:gapR, y1:yScreen, horiz:true };
+      if (edge==='top') gapInfoTop = info; else gapInfoBot = info;
+    }
   }
 
   Composite.add(engine.world, wallBodies);
+  lastWallAngle = gravAngle(gx, gy);
 }
 
 // ═══════════════════════════════════════════
 // SPAWN
-// Balls enter from random positions along the top edge.
-// Spawn is fast — the machine always wins unless player tilts!
+// Balls always enter from the "ceiling" edge (opposite to gravity).
 // ═══════════════════════════════════════════
-function canSpawnAt(x, radius){
-  // check no existing ball within 2 radii at the top
+
+// Given the current gravity vector, return the spawn edge and a
+// random position along it for a ball of the given radius.
+function spawnPosForGravity(gx, gy, radius){
+  const ang = gravAngle(gx, gy);
+  const margin = radius + 4;
+
+  // Ceiling edge is opposite to floor
+  let spawnEdge;
+  if      (Math.abs(ang) < Math.PI/4)                   spawnEdge = 'top';
+  else if (ang > Math.PI*3/4 || ang < -Math.PI*3/4)     spawnEdge = 'bottom';
+  else if (ang > 0)                                      spawnEdge = 'left';
+  else                                                   spawnEdge = 'right';
+
+  let x, y, vx, vy;
+  switch(spawnEdge){
+    case 'top':
+      x = margin + Math.random() * (W - margin*2);
+      y = -radius - 2;
+      vx = (Math.random()-0.5)*3; vy = 0.5;
+      break;
+    case 'bottom':
+      x = margin + Math.random() * (W - margin*2);
+      y = H + radius + 2;
+      vx = (Math.random()-0.5)*3; vy = -0.5;
+      break;
+    case 'left':
+      x = -radius - 2;
+      y = margin + Math.random() * (H - margin*2);
+      vx = 0.5; vy = (Math.random()-0.5)*3;
+      break;
+    case 'right':
+      x = W + radius + 2;
+      y = margin + Math.random() * (H - margin*2);
+      vx = -0.5; vy = (Math.random()-0.5)*3;
+      break;
+  }
+  return {x, y, vx, vy, spawnEdge};
+}
+
+function canSpawnAt(sx, sy, radius){
+  // No ball within 2 diameters near the spawn point
   for (const {body:b, radius:br} of balls){
-    if (b.position.y < radius * 4){
-      const dx = b.position.x - x;
-      if (Math.abs(dx) < (radius + br) * 1.1) return false;
-    }
+    const dx = b.position.x - sx, dy = b.position.y - sy;
+    if (Math.hypot(dx,dy) < (radius + br) * 1.2) return false;
   }
   return true;
 }
@@ -292,27 +360,24 @@ function trySpawn(){
   const now = performance.now();
   if (now - lastSpawnMs < CFG.SPAWN_DELAY) return;
 
-  // Try up to SPAWN_BURST positions across the top
-  const margin = CFG.RADIUS_MAX + 4;
-  let spawned  = 0;
+  const {gx, gy} = gravity();
+  let spawned = 0;
+
   for (let attempt = 0; attempt < 8 && spawned < CFG.SPAWN_BURST; attempt++){
     const radius = CFG.RADIUS_MIN + Math.random() * (CFG.RADIUS_MAX - CFG.RADIUS_MIN);
-    const x      = margin + Math.random() * (W - margin * 2);
-    if (!canSpawnAt(x, radius)) continue;
+    const {x, y, vx, vy} = spawnPosForGravity(gx, gy, radius);
+    if (!canSpawnAt(x, y, radius)) continue;
 
-    const body = Bodies.circle(x, -radius - 2, radius, {
-      restitution: CFG.RESTITUTION - (radius - CFG.RADIUS_MIN)/(CFG.RADIUS_MAX - CFG.RADIUS_MIN)*0.08,
+    const body = Bodies.circle(x, y, radius, {
+      restitution: CFG.RESTITUTION - (radius-CFG.RADIUS_MIN)/(CFG.RADIUS_MAX-CFG.RADIUS_MIN)*0.08,
       friction:    CFG.FRICTION,
       frictionAir: CFG.FRICTION_AIR,
       density:     CFG.DENSITY,
       label:       'ball',
     });
-    // Small random horizontal nudge
-    Body.setVelocity(body, { x: (Math.random()-0.5)*3, y: 0.5 });
+    Body.setVelocity(body, {x:vx, y:vy});
     Composite.add(engine.world, body);
-    const tint = TINTS[tintIdx++ % TINTS.length];
-    balls.push({ body, radius, tint });
-    spawnCounter++;
+    balls.push({ body, radius, tint: TINTS[tintIdx++ % TINTS.length] });
     spawned++;
   }
 
@@ -320,16 +385,13 @@ function trySpawn(){
 }
 
 // ═══════════════════════════════════════════
-// ESCAPE — balls exit through side gaps or fall far off screen
+// ESCAPE — remove balls that have left the screen
 // ═══════════════════════════════════════════
 function checkEscapes(){
   const far = CFG.RADIUS_MAX * 4;
-  for (let i = balls.length - 1; i >= 0; i--){
-    const {x, y} = balls[i].body.position;
-    const gone =
-      x < -far || x > W + far ||
-      y < -far || y > H + far;
-    if (gone){
+  for (let i = balls.length-1; i >= 0; i--){
+    const {x,y} = balls[i].body.position;
+    if (x < -far || x > W+far || y < -far || y > H+far){
       if (drag?.entry === balls[i]) drag = null;
       Composite.remove(engine.world, balls[i].body);
       balls.splice(i, 1);
@@ -339,362 +401,267 @@ function checkEscapes(){
 
 // ═══════════════════════════════════════════
 // WEBGL — background grid + sphere refraction
+// (unchanged from v2)
 // ═══════════════════════════════════════════
 function initGL(){
   const canvas = document.getElementById('gl');
-  canvas.width = W; canvas.height = H;
-  const gl = canvas.getContext('webgl', {alpha:false}) ||
-             canvas.getContext('experimental-webgl', {alpha:false});
+  canvas.width=W; canvas.height=H;
+  const gl = canvas.getContext('webgl',{alpha:false}) ||
+             canvas.getContext('experimental-webgl',{alpha:false});
   if (!gl){ console.warn('WebGL unavailable'); return null; }
 
-  const bgVS = `attribute vec2 p;varying vec2 uv;void main(){uv=p*.5+.5;gl_Position=vec4(p,0.,1.);}`;
-  const bgFS = `precision mediump float;
+  const bgVS=`attribute vec2 p;varying vec2 uv;void main(){uv=p*.5+.5;gl_Position=vec4(p,0.,1.);}`;
+  const bgFS=`precision mediump float;
     varying vec2 uv;uniform vec2 res;
     float grid(vec2 q){float s=34.,w=.7;vec2 g=mod(q,s);return max(smoothstep(w+1.,w,abs(g.y)),smoothstep(w+1.,w,abs(g.x)));}
     void main(){vec2 q=uv*res;q.y=res.y-q.y;gl_FragColor=vec4(mix(vec3(.04,.04,.072),vec3(.155,.195,.27),grid(q)),1.);}`;
-
-  const bVS = `attribute vec2 p;varying vec2 vp;uniform vec2 res;
+  const bVS=`attribute vec2 p;varying vec2 vp;uniform vec2 res;
     void main(){vp=(p*.5+.5)*res;vp.y=res.y-vp.y;gl_Position=vec4(p,0.,1.);}`;
-  const bFS = `precision highp float;
-    varying vec2 vp;
-    uniform vec2 res,bc;
-    uniform float br,drag;
-    uniform vec3 tint;
+  const bFS=`precision highp float;
+    varying vec2 vp;uniform vec2 res,bc;uniform float br,drag;uniform vec3 tint;
     float grid(vec2 q){float s=34.,w=.7;vec2 g=mod(q,s);return max(smoothstep(w+1.,w,abs(g.y)),smoothstep(w+1.,w,abs(g.x)));}
     vec3 bgAt(vec2 q){return mix(vec3(.04,.04,.072),vec3(.155,.195,.27),grid(q));}
     void main(){
-      vec2 d=vp-bc; float dist=length(d); float hw=br*.40;
+      vec2 d=vp-bc;float dist=length(d);float hw=br*.40;
       if(dist>br+hw){gl_FragColor=vec4(0.);return;}
-      if(dist>br){
-        float t=(dist-br)/hw;float h=exp(-t*t*4.5)*(0.40+drag*.40);
-        vec3 c=mix(tint*.85+vec3(.15),vec3(1.,.85,.3),drag);
-        gl_FragColor=vec4(c*h,h);return;
-      }
-      float nd=dist/br; float nz=sqrt(max(0.,1.-nd*nd));
-      vec3 N=normalize(vec3(d/br,nz)); vec3 I=vec3(0.,0.,-1.);
+      if(dist>br){float t=(dist-br)/hw;float h=exp(-t*t*4.5)*(0.40+drag*.40);
+        vec3 c=mix(tint*.85+vec3(.15),vec3(1.,.85,.3),drag);gl_FragColor=vec4(c*h,h);return;}
+      float nd=dist/br;float nz=sqrt(max(0.,1.-nd*nd));
+      vec3 N=normalize(vec3(d/br,nz));vec3 I=vec3(0.,0.,-1.);
       float eta=1./1.55,ci=nz,s2t=eta*eta*(1.-ci*ci);
       vec2 off;
       if(s2t>1.0){vec3 rf=I-2.*dot(I,N)*N;off=rf.xy*br*1.5;}
       else{float ct=sqrt(1.-s2t);vec3 rv=eta*I+(eta*ci-ct)*N;off=rv.xy*(-1.5*br/rv.z);}
       vec2 sp=clamp(bc+off,vec2(0.),res);
       vec3 col=bgAt(vec2(sp.x,res.y-sp.y));
-      float ts=.18+.22*(1.-nz);
-      col=mix(col,col*tint*1.4,ts);col+=tint*.04*(.3+.7*(1.-nz));
+      float ts=.18+.22*(1.-nz);col=mix(col,col*tint*1.4,ts);col+=tint*.04*(.3+.7*(1.-nz));
       vec2 s1=d-vec2(-br*.36,-br*.36);col+=exp(-dot(s1,s1)/(2.*(br*.19)*(br*.19)))*.20;
       vec2 s2=d+vec2(br*.20,br*.26);col+=exp(-dot(s2,s2)/(2.*(br*.048)*(br*.048)))*.45;
-      float e=smoothstep(1.,.90,nd);
-      gl_FragColor=vec4(mix(bgAt(vp),col,e),e);
-    }`;
+      float e=smoothstep(1.,.90,nd);gl_FragColor=vec4(mix(bgAt(vp),col,e),e);}`;
 
-  function mkShader(type, src){
-    const s = gl.createShader(type);
-    gl.shaderSource(s, src); gl.compileShader(s);
-    if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)){ console.error(gl.getShaderInfoLog(s)); return null; }
+  function mkShader(type,src){
+    const s=gl.createShader(type);gl.shaderSource(s,src);gl.compileShader(s);
+    if(!gl.getShaderParameter(s,gl.COMPILE_STATUS)){console.error(gl.getShaderInfoLog(s));return null;}
     return s;
   }
-  function mkProg(vs, fs){
-    const p = gl.createProgram();
-    gl.attachShader(p, mkShader(gl.VERTEX_SHADER, vs));
-    gl.attachShader(p, mkShader(gl.FRAGMENT_SHADER, fs));
-    gl.linkProgram(p);
-    return p;
+  function mkProg(vs,fs){
+    const p=gl.createProgram();
+    gl.attachShader(p,mkShader(gl.VERTEX_SHADER,vs));
+    gl.attachShader(p,mkShader(gl.FRAGMENT_SHADER,fs));
+    gl.linkProgram(p);return p;
   }
 
-  const bgP = mkProg(bgVS, bgFS), bP = mkProg(bVS, bFS);
-  const fsqBuf = gl.createBuffer();
-  gl.bindBuffer(gl.ARRAY_BUFFER, fsqBuf);
-  gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1,-1, 1,-1, -1,1, 1,1]), gl.STATIC_DRAW);
-  const ballBuf = gl.createBuffer();
-
-  return {
-    gl, bgP, bP, fsqBuf, ballBuf,
-    bgP_p:   gl.getAttribLocation(bgP,'p'),
-    bgP_res: gl.getUniformLocation(bgP,'res'),
-    bP_p:    gl.getAttribLocation(bP,'p'),
-    bP_res:  gl.getUniformLocation(bP,'res'),
-    bP_bc:   gl.getUniformLocation(bP,'bc'),
-    bP_br:   gl.getUniformLocation(bP,'br'),
-    bP_drg:  gl.getUniformLocation(bP,'drag'),
-    bP_tnt:  gl.getUniformLocation(bP,'tint'),
+  const bgP=mkProg(bgVS,bgFS),bP=mkProg(bVS,bFS);
+  const fsqBuf=gl.createBuffer();
+  gl.bindBuffer(gl.ARRAY_BUFFER,fsqBuf);
+  gl.bufferData(gl.ARRAY_BUFFER,new Float32Array([-1,-1,1,-1,-1,1,1,1]),gl.STATIC_DRAW);
+  const ballBuf=gl.createBuffer();
+  return{
+    gl,bgP,bP,fsqBuf,ballBuf,
+    bgP_p:gl.getAttribLocation(bgP,'p'),bgP_res:gl.getUniformLocation(bgP,'res'),
+    bP_p:gl.getAttribLocation(bP,'p'),bP_res:gl.getUniformLocation(bP,'res'),
+    bP_bc:gl.getUniformLocation(bP,'bc'),bP_br:gl.getUniformLocation(bP,'br'),
+    bP_drg:gl.getUniformLocation(bP,'drag'),bP_tnt:gl.getUniformLocation(bP,'tint'),
   };
 }
 
 function renderGL(){
-  if (!glState) return;
-  const {gl,bgP,bP,fsqBuf,ballBuf,bgP_p,bgP_res,bP_p,bP_res,bP_bc,bP_br,bP_drg,bP_tnt} = glState;
+  if(!glState)return;
+  const{gl,bgP,bP,fsqBuf,ballBuf,bgP_p,bgP_res,bP_p,bP_res,bP_bc,bP_br,bP_drg,bP_tnt}=glState;
   gl.viewport(0,0,W,H);
-
-  // Pass A — background grid
-  gl.disable(gl.BLEND);
-  gl.useProgram(bgP);
-  gl.bindBuffer(gl.ARRAY_BUFFER, fsqBuf);
-  gl.enableVertexAttribArray(bgP_p); gl.vertexAttribPointer(bgP_p,2,gl.FLOAT,false,0,0);
-  gl.uniform2f(bgP_res, W, H);
-  gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
-
-  // Pass B — balls
-  gl.enable(gl.BLEND); gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
-  gl.useProgram(bP); gl.uniform2f(bP_res, W, H);
-
-  const sorted = [...balls].sort((a,b) => b.radius - a.radius);
-  for (const entry of sorted){
-    const {body, radius, tint} = entry;
-    const cx = body.position.x, cy = body.position.y;
-    const ext = radius * 1.45;
-    const x0=(cx-ext)/W*2-1, x1=(cx+ext)/W*2-1;
-    const y0=1-(cy+ext)/H*2, y1=1-(cy-ext)/H*2;
-    const verts = new Float32Array([x0,y1, x1,y1, x0,y0, x1,y0]);
-    gl.bindBuffer(gl.ARRAY_BUFFER, ballBuf);
-    gl.bufferData(gl.ARRAY_BUFFER, verts, gl.DYNAMIC_DRAW);
-    gl.enableVertexAttribArray(bP_p); gl.vertexAttribPointer(bP_p,2,gl.FLOAT,false,0,0);
-    gl.uniform2f(bP_bc, cx, cy);
-    gl.uniform1f(bP_br, radius);
-    gl.uniform1f(bP_drg, drag?.entry === entry ? 1.0 : 0.0);
-    const t = tint || [0.7,0.88,1.0];
-    gl.uniform3f(bP_tnt, t[0], t[1], t[2]);
-    gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+  gl.disable(gl.BLEND);gl.useProgram(bgP);
+  gl.bindBuffer(gl.ARRAY_BUFFER,fsqBuf);
+  gl.enableVertexAttribArray(bgP_p);gl.vertexAttribPointer(bgP_p,2,gl.FLOAT,false,0,0);
+  gl.uniform2f(bgP_res,W,H);gl.drawArrays(gl.TRIANGLE_STRIP,0,4);
+  gl.enable(gl.BLEND);gl.blendFunc(gl.SRC_ALPHA,gl.ONE_MINUS_SRC_ALPHA);
+  gl.useProgram(bP);gl.uniform2f(bP_res,W,H);
+  const sorted=[...balls].sort((a,b)=>b.radius-a.radius);
+  for(const entry of sorted){
+    const{body,radius,tint}=entry;
+    const cx=body.position.x,cy=body.position.y;
+    const ext=radius*1.45;
+    const x0=(cx-ext)/W*2-1,x1=(cx+ext)/W*2-1;
+    const y0=1-(cy+ext)/H*2,y1=1-(cy-ext)/H*2;
+    const verts=new Float32Array([x0,y1,x1,y1,x0,y0,x1,y0]);
+    gl.bindBuffer(gl.ARRAY_BUFFER,ballBuf);
+    gl.bufferData(gl.ARRAY_BUFFER,verts,gl.DYNAMIC_DRAW);
+    gl.enableVertexAttribArray(bP_p);gl.vertexAttribPointer(bP_p,2,gl.FLOAT,false,0,0);
+    gl.uniform2f(bP_bc,cx,cy);gl.uniform1f(bP_br,radius);
+    gl.uniform1f(bP_drg,drag?.entry===entry?1.0:0.0);
+    const t=tint||[0.7,0.88,1.0];gl.uniform3f(bP_tnt,t[0],t[1],t[2]);
+    gl.drawArrays(gl.TRIANGLE_STRIP,0,4);
   }
 }
 
 // ═══════════════════════════════════════════
-// 2D OVERLAY — side gap indicators + trails
+// 2D OVERLAY — gap indicators + trails
 // ═══════════════════════════════════════════
 function drawOverlay(){
-  if (!ctx2d) return;
-  const c = ctx2d;
-  c.clearRect(0, 0, W, H);
+  if(!ctx2d)return;
+  const c=ctx2d;c.clearRect(0,0,W,H);
+  const pulse=0.55+0.45*Math.sin(performance.now()*.003);
+  const a=0.20+0.28*pulse;
+  c.strokeStyle=`rgba(0,255,120,${a})`;c.fillStyle=`rgba(0,255,120,${a})`;c.lineWidth=1.5;
 
-  const pulse = 0.55 + 0.45 * Math.sin(performance.now() * 0.003);
-  const a     = 0.20 + 0.28 * pulse;
-
-  c.strokeStyle = `rgba(0,255,120,${a})`;
-  c.fillStyle   = `rgba(0,255,120,${a})`;
-  c.lineWidth   = 1.5;
-
-  // ── Side gap indicators ──────────────────────────────────────────
-  // Left side gap lines (top edge of gap, bottom edge of gap)
-  c.beginPath(); c.moveTo(0, sideGapTop); c.lineTo(18, sideGapTop); c.stroke();
-  c.beginPath(); c.moveTo(0, sideGapBot); c.lineTo(18, sideGapBot); c.stroke();
-  // Vertical line along left edge of gap
-  c.beginPath(); c.moveTo(0, sideGapTop); c.lineTo(0, sideGapBot); c.stroke();
-  // Arrow pointing inward
-  _arrow(c, 0, H/2, 1, 0, 22);
-
-  // Right side
-  c.beginPath(); c.moveTo(W, sideGapTop); c.lineTo(W-18, sideGapTop); c.stroke();
-  c.beginPath(); c.moveTo(W, sideGapBot); c.lineTo(W-18, sideGapBot); c.stroke();
-  c.beginPath(); c.moveTo(W, sideGapTop); c.lineTo(W, sideGapBot); c.stroke();
-  _arrow(c, W, H/2, -1, 0, 22);
-
-  // ── Ball trails ──────────────────────────────────────────────────
-  for (const {body, radius} of balls){
-    const spd = Math.hypot(body.velocity.x, body.velocity.y);
-    if (spd > 2){
-      const nx = -body.velocity.x/spd, ny = -body.velocity.y/spd;
-      const tl = Math.min(spd*3.5, 75);
-      const tg = c.createLinearGradient(
-        body.position.x, body.position.y,
-        body.position.x + nx*tl, body.position.y + ny*tl
-      );
-      tg.addColorStop(0, 'rgba(200,220,255,0.14)');
-      tg.addColorStop(1, 'rgba(200,220,255,0)');
-      c.beginPath();
-      c.moveTo(body.position.x + nx*radius*.85, body.position.y + ny*radius*.85);
-      c.lineTo(body.position.x + nx*tl,          body.position.y + ny*tl);
-      c.lineWidth = radius*.5; c.lineCap = 'round';
-      c.strokeStyle = tg; c.stroke();
+  // Draw each gap (exit openings)
+  function drawGap(info){
+    if(!info)return;
+    if(info.horiz){
+      // top or bottom horizontal gap
+      const mx=(info.x0+info.x1)/2, my=info.y0;
+      // tick marks
+      c.beginPath();c.moveTo(info.x0,my);c.lineTo(info.x0,my+(my<H/2?12:-12));c.stroke();
+      c.beginPath();c.moveTo(info.x1,my);c.lineTo(info.x1,my+(my<H/2?12:-12));c.stroke();
+      // gap line
+      c.beginPath();c.moveTo(info.x0,my);c.lineTo(info.x1,my);c.stroke();
+      // arrow into the screen
+      _arrow(c,mx,my,0,my<H/2?1:-1,22);
+    } else {
+      // left or right vertical gap
+      const mx=info.x0, my=(info.y0+info.y1)/2;
+      const dir=mx<W/2?1:-1;
+      c.beginPath();c.moveTo(mx,info.y0);c.lineTo(mx+dir*12,info.y0);c.stroke();
+      c.beginPath();c.moveTo(mx,info.y1);c.lineTo(mx+dir*12,info.y1);c.stroke();
+      c.beginPath();c.moveTo(mx,info.y0);c.lineTo(mx,info.y1);c.stroke();
+      _arrow(c,mx,my,dir,0,22);
     }
   }
+  drawGap(gapInfoLeft);drawGap(gapInfoRight);
+  drawGap(gapInfoTop);drawGap(gapInfoBot);
 
+  // Ball trails
+  for(const{body,radius}of balls){
+    const spd=Math.hypot(body.velocity.x,body.velocity.y);
+    if(spd>2){
+      const nx=-body.velocity.x/spd,ny=-body.velocity.y/spd;
+      const tl=Math.min(spd*3.5,75);
+      const tg=c.createLinearGradient(body.position.x,body.position.y,
+        body.position.x+nx*tl,body.position.y+ny*tl);
+      tg.addColorStop(0,'rgba(200,220,255,0.14)');tg.addColorStop(1,'rgba(200,220,255,0)');
+      c.beginPath();
+      c.moveTo(body.position.x+nx*radius*.85,body.position.y+ny*radius*.85);
+      c.lineTo(body.position.x+nx*tl,body.position.y+ny*tl);
+      c.lineWidth=radius*.5;c.lineCap='round';c.strokeStyle=tg;c.stroke();
+    }
+  }
   // Corner brackets
-  c.strokeStyle = `rgba(0,255,120,0.08)`; c.lineWidth = 1;
-  [[0,0],[W,0],[0,H],[W,H]].forEach(([cx,cy]) => {
-    const sx = cx ? -1 : 1, sy = cy ? -1 : 1;
-    c.beginPath(); c.moveTo(cx+sx*18,cy); c.lineTo(cx,cy); c.lineTo(cx,cy+sy*18); c.stroke();
+  c.strokeStyle=`rgba(0,255,120,0.08)`;c.lineWidth=1;
+  [[0,0],[W,0],[0,H],[W,H]].forEach(([cx,cy])=>{
+    const sx=cx?-1:1,sy=cy?-1:1;
+    c.beginPath();c.moveTo(cx+sx*18,cy);c.lineTo(cx,cy);c.lineTo(cx,cy+sy*18);c.stroke();
   });
 }
 
-function _arrow(c, ox, oy, dx, dy, len){
-  const ex = ox+dx*len, ey = oy+dy*len;
-  c.beginPath(); c.moveTo(ox,oy); c.lineTo(ex,ey); c.stroke();
-  const px=-dy, py=dx, hw=5, hl=8;
-  c.beginPath();
-  c.moveTo(ex, ey);
-  c.lineTo(ex-dx*hl+px*hw, ey-dy*hl+py*hw);
-  c.lineTo(ex-dx*hl-px*hw, ey-dy*hl-py*hw);
-  c.closePath(); c.fill();
+function _arrow(c,ox,oy,dx,dy,len){
+  const ex=ox+dx*len,ey=oy+dy*len;
+  c.beginPath();c.moveTo(ox,oy);c.lineTo(ex,ey);c.stroke();
+  const px=-dy,py=dx,hw=5,hl=8;
+  c.beginPath();c.moveTo(ex,ey);
+  c.lineTo(ex-dx*hl+px*hw,ey-dy*hl+py*hw);
+  c.lineTo(ex-dx*hl-px*hw,ey-dy*hl-py*hw);
+  c.closePath();c.fill();
 }
 
 // ═══════════════════════════════════════════
 // DRAG
 // ═══════════════════════════════════════════
-function getPos(e){
-  const src = e.changedTouches ? e.changedTouches[0] : e;
-  return { x: src.clientX, y: src.clientY };
-}
-
+function getPos(e){const src=e.changedTouches?e.changedTouches[0]:e;return{x:src.clientX,y:src.clientY};}
 function onDown(e){
-  if (drag) return;
-  const {x,y} = getPos(e);
-  mVX=0; mVY=0; mX=x; mY=y;
-  const bonus = e.changedTouches ? 1.5 : 1.0;
-  for (const entry of [...balls].sort((a,b) => a.radius - b.radius)){
-    const dx = entry.body.position.x - x, dy = entry.body.position.y - y;
-    if (Math.hypot(dx,dy) <= entry.radius * bonus){
-      drag = {entry};
-      Body.setStatic(entry.body, true);
-      e.preventDefault();
-      return;
+  if(drag)return;const{x,y}=getPos(e);mVX=0;mVY=0;mX=x;mY=y;
+  const bonus=e.changedTouches?1.5:1.0;
+  for(const entry of[...balls].sort((a,b)=>a.radius-b.radius)){
+    const dx=entry.body.position.x-x,dy=entry.body.position.y-y;
+    if(Math.hypot(dx,dy)<=entry.radius*bonus){
+      drag={entry};Body.setStatic(entry.body,true);e.preventDefault();return;
     }
   }
 }
-function onMove(e){
-  const {x,y} = getPos(e);
-  mVX=x-mX; mVY=y-mY; mX=x; mY=y;
-  if (drag) e.preventDefault();
-}
+function onMove(e){const{x,y}=getPos(e);mVX=x-mX;mVY=y-mY;mX=x;mY=y;if(drag)e.preventDefault();}
 function onUp(e){
-  if (!drag) return;
-  e.preventDefault();
-  Body.setStatic(drag.entry.body, false);
-  Body.setVelocity(drag.entry.body, {x:mVX*1.3, y:mVY*1.3});
-  drag = null;
+  if(!drag)return;e.preventDefault();
+  Body.setStatic(drag.entry.body,false);
+  Body.setVelocity(drag.entry.body,{x:mVX*1.3,y:mVY*1.3});drag=null;
 }
-
 function setupDrag(){
-  document.addEventListener('mousedown',   onDown);
-  document.addEventListener('mousemove',   onMove);
-  document.addEventListener('mouseup',     onUp);
-  document.addEventListener('touchstart',  onDown,  {passive:false});
-  document.addEventListener('touchmove',   onMove,  {passive:false});
-  document.addEventListener('touchend',    onUp,    {passive:false});
-  document.addEventListener('touchcancel', onUp,    {passive:false});
+  document.addEventListener('mousedown',onDown);document.addEventListener('mousemove',onMove);document.addEventListener('mouseup',onUp);
+  document.addEventListener('touchstart',onDown,{passive:false});document.addEventListener('touchmove',onMove,{passive:false});
+  document.addEventListener('touchend',onUp,{passive:false});document.addEventListener('touchcancel',onUp,{passive:false});
 }
 
 // ═══════════════════════════════════════════
-// RESIZE — preserves ball state, only rebuilds walls + canvases
+// RESIZE — preserve balls, rebuild walls + canvases
 // ═══════════════════════════════════════════
 function resize(){
-  W = window.innerWidth;
-  H = window.innerHeight;
-
-  // Resize canvases
-  const glC  = document.getElementById('gl');
-  const c2dC = document.getElementById('c2d');
-  [glC, c2dC].forEach(cv => {
-    cv.width  = W; cv.height  = H;
-    cv.style.width  = W + 'px';
-    cv.style.height = H + 'px';
+  W=window.innerWidth;H=window.innerHeight;
+  const glC=document.getElementById('gl'),c2dC=document.getElementById('c2d');
+  [glC,c2dC].forEach(cv=>{
+    cv.width=W;cv.height=H;cv.style.width=W+'px';cv.style.height=H+'px';
   });
-  ctx2d  = c2dC.getContext('2d');
-  glState = initGL();
-
-  // Clamp existing ball positions into new screen bounds
-  for (const {body, radius} of balls){
-    const nx = Math.max(radius, Math.min(W-radius, body.position.x));
-    const ny = Math.max(radius, Math.min(H-radius, body.position.y));
-    if (nx !== body.position.x || ny !== body.position.y){
-      Body.setPosition(body, {x:nx, y:ny});
-    }
+  ctx2d=c2dC.getContext('2d');glState=initGL();
+  for(const{body,radius}of balls){
+    const nx=Math.max(radius,Math.min(W-radius,body.position.x));
+    const ny=Math.max(radius,Math.min(H-radius,body.position.y));
+    Body.setPosition(body,{x:nx,y:ny});
   }
-
-  // Rebuild walls only
-  buildWalls();
-
-  // Update GL canvas size in shader (re-init handles it)
+  const{gx,gy}=gravity();
+  buildWalls(gx,gy);
+  lastWallAngle=gravAngle(gx,gy);
 }
 
 // ═══════════════════════════════════════════
 // MAIN LOOP
 // ═══════════════════════════════════════════
 function loop(){
-  loopId = requestAnimationFrame(loop);
+  requestAnimationFrame(loop);
+  _fc++;const now=performance.now();
+  if(now-_ft>=1000){fps=_fc;_fc=0;_ft=now;}
 
-  // FPS
-  _fc++;
-  const now = performance.now();
-  if (now -_ft >= 1000){ fps=_fc; _fc=0; _ft=now; }
+  const{gx,gy}=gravity();
+  engine.gravity.x=gx;engine.gravity.y=gy;
 
-  // Gravity from accelerometer
-  const {gx, gy} = gravity();
-  engine.gravity.x = gx;
-  engine.gravity.y = gy;
-
-  // Drag
-  if (drag){
-    const b = drag.entry.body;
-    Body.setVelocity(b, {x: mVX*.6, y: mVY*.6});
-    Body.setPosition(b, {
-      x: b.position.x + (mX - b.position.x)*.35,
-      y: b.position.y + (mY - b.position.y)*.35,
-    });
+  // Rebuild walls if gravity direction has shifted enough
+  if(lastWallAngle===null || Math.abs(gravAngle(gx,gy)-lastWallAngle) > CFG.WALL_REBUILD_THRESH){
+    buildWalls(gx,gy);
   }
 
-  // Spawn + escape
-  if (now - lastEscapeMs > CFG.ESCAPE_MS){ checkEscapes(); lastEscapeMs=now; }
+  // Drag
+  if(drag){
+    const b=drag.entry.body;
+    Body.setVelocity(b,{x:mVX*.6,y:mVY*.6});
+    Body.setPosition(b,{x:b.position.x+(mX-b.position.x)*.35,y:b.position.y+(mY-b.position.y)*.35});
+  }
+
+  if(now-lastEscapeMs>CFG.ESCAPE_MS){checkEscapes();lastEscapeMs=now;}
   trySpawn();
 
   renderGL();
   drawOverlay();
 
-  // HUD
-  elBalls.textContent = balls.length;
-  elQueue.textContent = Math.max(0, CFG.MAX_BALLS - balls.length);
-  elSns.textContent   = IS_MOBILE ? (sensorOk ? '✓' : '…') : 'PC';
-  elGx.textContent    = gx.toFixed(2);
-  elGy.textContent    = gy.toFixed(2);
-  elFps.textContent   = `FPS ${fps}`;
+  elBalls.textContent=balls.length;
+  elSns.textContent=IS_MOBILE?(sensorOk?'✓':'…'):'PC';
+  elGx.textContent=gx.toFixed(2);elGy.textContent=gy.toFixed(2);
+  elFps.textContent=`FPS ${fps}`;
 }
 
 // ═══════════════════════════════════════════
 // INIT
 // ═══════════════════════════════════════════
 function init(){
-  W = window.innerWidth;
-  H = window.innerHeight;
-
-  // Canvases
-  const glC  = document.getElementById('gl');
-  const c2dC = document.getElementById('c2d');
-  [glC, c2dC].forEach(cv => {
-    cv.width = W; cv.height = H;
-    cv.style.width = W+'px'; cv.style.height = H+'px';
-  });
-  ctx2d   = c2dC.getContext('2d');
-  glState = initGL();
-
-  // Physics engine
-  engine = Engine.create({ gravity:{x:0, y:1, scale:0.001} });
-  engine.positionIterations = 10;
-  engine.velocityIterations = 8;
-
-  buildWalls();
-
-  runner = Runner.create();
-  Runner.run(runner, engine);
-
+  W=window.innerWidth;H=window.innerHeight;
+  const glC=document.getElementById('gl'),c2dC=document.getElementById('c2d');
+  [glC,c2dC].forEach(cv=>{cv.width=W;cv.height=H;cv.style.width=W+'px';cv.style.height=H+'px';});
+  ctx2d=c2dC.getContext('2d');glState=initGL();
+  engine=Engine.create({gravity:{x:0,y:1,scale:0.001}});
+  engine.positionIterations=10;engine.velocityIterations=8;
+  buildWalls(0,1);
+  runner=Runner.create();Runner.run(runner,engine);
   loop();
 }
 
-// ── Resize debounce — never resets balls ─────────────────────────
-let _resizeTimer = null;
-window.addEventListener('resize', () => {
-  clearTimeout(_resizeTimer);
-  _resizeTimer = setTimeout(resize, 80);
-});
-
-// ── Orientation change → resize (no reset) ──────────────────────
-window.addEventListener('orientationchange', () => {
-  clearTimeout(_resizeTimer);
-  _resizeTimer = setTimeout(resize, 150);
-});
-
-// ── Entry point ──────────────────────────────────────────────────
-window.addEventListener('DOMContentLoaded', () => {
-  setupDrag();
-  startSensor();
-  init();
-});
+let _resizeTimer=null;
+window.addEventListener('resize',()=>{clearTimeout(_resizeTimer);_resizeTimer=setTimeout(resize,80);});
+window.addEventListener('orientationchange',()=>{clearTimeout(_resizeTimer);_resizeTimer=setTimeout(resize,150);});
+window.addEventListener('DOMContentLoaded',()=>{setupDrag();startSensor();init();});
 </script>
 </body>
 </html>
