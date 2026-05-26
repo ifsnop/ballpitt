@@ -64,8 +64,7 @@ const RESTITUTION  = 0.88;
 const FRICTION     = 0.0005;
 const FRICTION_AIR = 0.003;
 const SENSOR_ALPHA = 0.18;
-const GAP_TOP_FRAC  = 0.28;   // top gap as fraction of W
-const GAP_SIDE_FRAC = 0.22;   // side gap as fraction of H
+const GAP_MIN      = RADIUS_MAX * 2 * 1.1; // gap always 10% bigger than largest ball diameter
 const SPAWN_DELAY   = 350;    // ms between spawns
 
 // ── Mutable state ──────────────────────────────────────────────────────────
@@ -96,17 +95,15 @@ function dg(l,v){ return `<span class="dg"><span class="dl">${l}</span><span cla
 const SEP = '<span class="ds">|</span>';
 
 function updateDebug(){
-  const b = balls[0]?.body;
   dbgEl.innerHTML =
     dg('DEV', IS_DESKTOP?'PC':'MOB') + SEP +
     dg('SNS', sensorOk?'✓':'✗') + SEP +
+    dg('ANG', orientAngle()) + SEP +
     dg('AX',f1(ax))+SEP+dg('AY',f1(ay))+SEP+dg('AZ',f1(az))+SEP+
     dg('GX', engine?f2(engine.gravity.x):'--')+SEP+
     dg('GY', engine?f2(engine.gravity.y):'--')+SEP+
-    dg('POS', b?`${f0(b.position.x)},${f0(b.position.y)}`:'--')+SEP+
-    dg('SPD', b?f1(Math.hypot(b.velocity.x,b.velocity.y)):'--')+SEP+
-    dg('N',   balls.length)+SEP+
-    dg('Q',   spawnQueue);
+    dg('BOLAS', balls.length)+SEP+
+    dg('COLA',  spawnQueue);
   fpsEl.textContent = `FPS ${fps}`;
 }
 
@@ -148,8 +145,8 @@ function buildWalls(){
   const T = WALL;
   const wo = {isStatic:true, restitution:RESTITUTION, friction:FRICTION, label:'wall'};
 
-  const gTW = W * GAP_TOP_FRAC;
-  const gSH = H * GAP_SIDE_FRAC;
+  const gTW = GAP_MIN;   // top gap width  (fixed, 10% larger than biggest ball)
+  const gSH = GAP_MIN;   // side gap height (same)
   gaps = {
     topL:  W/2 - gTW/2,   topR:  W/2 + gTW/2,
     leftT: H/2 - gSH/2,   leftB: H/2 + gSH/2,
@@ -462,23 +459,58 @@ function buildWorld(){
   drawLoop();
 }
 
-// ── Desktop mouse drag ──────────────────────────────────────────────────────
+// ── Drag: mouse + touch (always active) ────────────────────────────────────
 function setupDrag(){
-  const el=document.getElementById('c2d');
-  function pos(e){ const r=el.getBoundingClientRect(); return {x:e.clientX-r.left,y:e.clientY-r.top}; }
-  el.addEventListener('mousedown',e=>{
-    const {x,y}=pos(e); mX=x;mY=y;
+  const el = document.getElementById('c2d');
+
+  function clientPos(e){
+    // Touch or mouse
+    const src = e.changedTouches ? e.changedTouches[0] : e;
+    const r   = el.getBoundingClientRect();
+    return { x: src.clientX - r.left, y: src.clientY - r.top };
+  }
+
+  function startDrag(e){
+    const {x,y} = clientPos(e);
+    mVX=0; mVY=0; mX=x; mY=y;
+    // Pick smallest ball under finger/cursor (visually on top)
     for (const entry of [...balls].sort((a,b)=>a.radius-b.radius)){
-      if (Math.hypot(entry.body.position.x-x,entry.body.position.y-y)<=entry.radius){
-        drag={entry}; Body.setStatic(entry.body,true); e.preventDefault(); break;
+      const dx=entry.body.position.x-x, dy=entry.body.position.y-y;
+      // Slightly larger hit area on touch
+      const hitR = entry.radius * (e.changedTouches ? 1.4 : 1.0);
+      if (Math.hypot(dx,dy) <= hitR){
+        drag={entry}; Body.setStatic(entry.body,true);
+        e.preventDefault(); break;
       }
     }
-  });
-  el.addEventListener('mousemove',e=>{
-    const {x,y}=pos(e); mVX=x-mX;mVY=y-mY; mX=x;mY=y;
-  });
-  function end(){ if(drag){ Body.setStatic(drag.entry.body,false); Body.setVelocity(drag.entry.body,{x:mVX*1.2,y:mVY*1.2}); drag=null; } }
-  el.addEventListener('mouseup',end); el.addEventListener('mouseleave',end);
+  }
+
+  function moveDrag(e){
+    if (!drag) return;
+    e.preventDefault();
+    const {x,y}=clientPos(e);
+    mVX=x-mX; mVY=y-mY; mX=x; mY=y;
+  }
+
+  function endDrag(e){
+    if (!drag) return;
+    e.preventDefault();
+    Body.setStatic(drag.entry.body, false);
+    Body.setVelocity(drag.entry.body, {x:mVX*1.2, y:mVY*1.2});
+    drag=null;
+  }
+
+  // Mouse
+  el.addEventListener('mousedown',  startDrag);
+  el.addEventListener('mousemove',  moveDrag);
+  el.addEventListener('mouseup',    endDrag);
+  el.addEventListener('mouseleave', endDrag);
+
+  // Touch
+  el.addEventListener('touchstart',  startDrag, {passive:false});
+  el.addEventListener('touchmove',   moveDrag,  {passive:false});
+  el.addEventListener('touchend',    endDrag,   {passive:false});
+  el.addEventListener('touchcancel', endDrag,   {passive:false});
 }
 
 // ── Sensor ──────────────────────────────────────────────────────────────────
@@ -513,7 +545,7 @@ document.getElementById('btn-start').addEventListener('click', ()=>{
   if (!IS_DESKTOP){ lockLandscape(); goFullscreen(); }
   buildWorld();
   startSensor();
-  if (IS_DESKTOP) setupDrag();
+  setupDrag();
 });
 </script>
 </body>
