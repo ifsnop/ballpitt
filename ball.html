@@ -5,6 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
 <title>Ball Physics</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/matter-js/0.19.0/matter.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/tone/14.8.49/Tone.js"></script>
 <style>
   * { margin: 0; padding: 0; box-sizing: border-box; }
   html, body {
@@ -107,6 +108,7 @@ let sensorOk = false;
 let fps = 0, lastTime = performance.now(), frameCount = 0;
 let drawLoopId = null;
 let hasGoneLandscape = false;
+let toneReady = false;   // Tone.js context started
 
 // ── Orientation angle ──────────────────────────────────────────────────────
 // We read screen.orientation.angle (0, 90, 180, 270) to remap axes.
@@ -390,6 +392,68 @@ function renderGL() {
   g.drawArrays(g.TRIANGLE_STRIP, 0, 4);
 }
 
+// ── Tone.js audio ──────────────────────────────────────────────────────────
+// synth: short percussive click — pitched to impact speed
+// reverb: small room feel so it doesn't sound completely dry
+let synth, reverb, lastHitTime = 0;
+
+async function initAudio() {
+  if (toneReady) return;
+  await Tone.start();   // must be called from a user gesture
+
+  reverb = new Tone.Reverb({ decay: 0.6, wet: 0.25 }).toDestination();
+  await reverb.ready;
+
+  // MembraneSynth gives a nice rounded "thud" — like a bubble hitting glass
+  synth = new Tone.MembraneSynth({
+    pitchDecay : 0.018,
+    octaves    : 4,
+    envelope   : { attack: 0.001, decay: 0.08, sustain: 0.0, release: 0.12 },
+    volume     : -8,
+  }).connect(reverb);
+
+  toneReady = true;
+}
+
+// Called on every Matter.js collision event
+function onCollision(event) {
+  if (!toneReady || !synth) return;
+
+  const now = performance.now();
+  if (now - lastHitTime < 40) return;   // debounce — max ~25 hits/s
+  lastHitTime = now;
+
+  // Find the pair that involves our ball
+  const pair = event.pairs.find(p =>
+    p.bodyA === ball || p.bodyB === ball
+  );
+  if (!pair) return;
+
+  // Impact speed: relative velocity projected on collision normal
+  const { collision } = pair;
+  const relVel = pair.bodyA === ball
+    ? { x: pair.bodyA.velocity.x - pair.bodyB.velocity.x,
+        y: pair.bodyA.velocity.y - pair.bodyB.velocity.y }
+    : { x: pair.bodyB.velocity.x - pair.bodyA.velocity.x,
+        y: pair.bodyB.velocity.y - pair.bodyA.velocity.y };
+  const speed = Math.abs(
+    relVel.x * collision.normal.x + relVel.y * collision.normal.y
+  );
+
+  if (speed < 0.8) return;   // ignore micro-taps when ball is resting
+
+  // Map speed → pitch: slow = low thud (~C2), fast = higher tap (~C4)
+  const minSpd = 1, maxSpd = 22;
+  const t = Math.min(1, Math.max(0, (speed - minSpd) / (maxSpd - minSpd)));
+  const notes = ['C2','D2','F2','G2','A2','C3','D3','F3','G3','A3','C4'];
+  const note  = notes[Math.round(t * (notes.length - 1))];
+
+  // Volume scales with impact — quiet grazes, loud slams
+  const vol = -28 + t * 20;   // -28 dB … -8 dB
+  synth.volume.value = vol;
+  synth.triggerAttackRelease(note, '32n');
+}
+
 // ── Build world ────────────────────────────────────────────────────────────
 function buildWorld() {
   if (runner) Runner.stop(runner);
@@ -423,6 +487,9 @@ function buildWorld() {
 
   runner = Runner.create();
   Runner.run(runner, engine);
+
+  // Register collision sound
+  Matter.Events.on(engine, 'collisionStart', onCollision);
 
   if (drawLoopId) cancelAnimationFrame(drawLoopId);
   drawLoop();
@@ -505,6 +572,7 @@ document.getElementById('btn-start').addEventListener('click', () => {
   checkOrientation();
   buildWorld();
   startSensor();
+  initAudio();   // must be called from user gesture
 });
 </script>
 </body>
