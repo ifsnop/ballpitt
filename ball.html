@@ -7,87 +7,52 @@
 <script src="https://cdnjs.cloudflare.com/ajax/libs/matter-js/0.19.0/matter.min.js"></script>
 <style>
   * { margin:0; padding:0; box-sizing:border-box; }
-  html, body {
-    background:#0a0a0f; overflow:hidden;
-    width:100%; height:100%;
-    font-family:'Courier New',monospace;
-    touch-action:none;
-  }
-  #rotate-msg {
-    display:none; position:fixed; inset:0;
-    background:#0a0a0f; z-index:999;
-    flex-direction:column; align-items:center; justify-content:center;
-    gap:20px; color:#00ff78; text-align:center; padding:32px;
-  }
-  #rotate-msg.show { display:flex; }
-  #rotate-msg svg  { animation:spin 2s linear infinite; }
-  @keyframes spin  { to { transform:rotate(360deg); } }
-  #rotate-msg p    { font-size:14px; opacity:0.7; letter-spacing:0.1em; }
+  html, body { background:#0a0a0f; overflow:hidden; width:100%; height:100%; font-family:'Courier New',monospace; touch-action:none; }
   #debug {
     position:fixed; top:0; left:0; right:0; z-index:100;
-    background:rgba(0,255,120,0.07);
-    border-bottom:1px solid rgba(0,255,120,0.18);
-    padding:3px 8px; font-size:10px; color:#00ff78;
-    letter-spacing:0.04em;
-    display:flex; flex-wrap:wrap; align-items:center;
-    backdrop-filter:blur(4px); line-height:1.65;
+    background:rgba(0,255,120,0.07); border-bottom:1px solid rgba(0,255,120,0.18);
+    padding:3px 8px; font-size:10px; color:#00ff78; letter-spacing:0.04em;
+    display:flex; flex-wrap:wrap; align-items:center; backdrop-filter:blur(4px); line-height:1.65;
   }
   .dg { display:flex; align-items:center; gap:3px; margin-right:2px; }
-  .dl { opacity:0.4; font-size:9px; }
-  .dv { font-weight:bold; font-size:10px; min-width:34px; }
+  .dl { opacity:0.4; font-size:9px; } .dv { font-weight:bold; font-size:10px; min-width:34px; }
   .ds { opacity:0.18; margin:0 5px; }
-  #fps-box {
-    position:fixed; bottom:8px; right:10px; z-index:100;
-    font-family:'Courier New',monospace;
-    font-size:10px; color:#00ff78; opacity:0.55;
-    letter-spacing:0.05em; pointer-events:none;
-  }
+  #fps-box { position:fixed; bottom:8px; right:10px; z-index:100; font-family:'Courier New',monospace; font-size:10px; color:#00ff78; opacity:0.55; pointer-events:none; }
   canvas { display:block; position:fixed; top:0; left:0; }
-  #gl  { z-index:1; }
-  #c2d { z-index:2; }
-  #permission-overlay {
-    position:fixed; inset:0; background:#0a0a0f;
-    display:flex; flex-direction:column;
-    align-items:center; justify-content:center;
-    gap:24px; z-index:300; padding:32px;
+  #gl { z-index:1; } #c2d { z-index:2; }
+  #overlay {
+    position:fixed; inset:0; background:#0a0a0f; z-index:300;
+    display:flex; flex-direction:column; align-items:center; justify-content:center; gap:24px; padding:32px;
   }
-  #permission-overlay h1 { font-size:20px; color:#00ff78; letter-spacing:0.12em; text-align:center; }
-  #permission-overlay p  { font-size:13px; color:rgba(0,255,120,0.6); text-align:center; line-height:1.7; max-width:320px; }
+  #overlay h1 { font-size:20px; color:#00ff78; letter-spacing:0.12em; text-align:center; }
+  #overlay p  { font-size:13px; color:rgba(0,255,120,0.6); text-align:center; line-height:1.7; max-width:320px; }
   #btn-start {
     background:transparent; border:1.5px solid #00ff78; color:#00ff78;
     font-family:'Courier New',monospace; font-size:13px; letter-spacing:0.15em;
     padding:14px 36px; cursor:pointer; text-transform:uppercase;
-    transition:background .2s,color .2s; -webkit-tap-highlight-color:transparent;
+    -webkit-tap-highlight-color:transparent;
   }
   #btn-start:active { background:#00ff78; color:#0a0a0f; }
 </style>
 </head>
 <body>
 
-<div id="rotate-msg">
-  <svg width="48" height="48" viewBox="0 0 48 48" fill="none">
-    <rect x="10" y="6" width="28" height="36" rx="4" stroke="#00ff78" stroke-width="2"/>
-    <path d="M32 2 L38 8 L32 14" stroke="#00ff78" stroke-width="2" fill="none" stroke-linecap="round"/>
-    <line x1="38" y1="8" x2="24" y2="8" stroke="#00ff78" stroke-width="2" stroke-linecap="round"/>
-  </svg>
-  <p>GIRA EL MÓVIL<br>A MODO APAISADO</p>
-</div>
-
-<div id="permission-overlay">
-  <h1>BALL PHYSICS</h1>
-  <p id="overlay-desc">Cargando...</p>
-  <button id="btn-start">INICIAR</button>
-</div>
-
 <canvas id="gl"></canvas>
 <canvas id="c2d"></canvas>
 <div id="debug">cargando...</div>
 <div id="fps-box">FPS —</div>
 
-<script>
-const { Engine, Runner, Bodies, Body, Composite, Events, Mouse, MouseConstraint } = Matter;
+<div id="overlay">
+  <h1>BALL PHYSICS</h1>
+  <p id="odesc">Cargando...</p>
+  <button id="btn-start">INICIAR</button>
+</div>
 
-// ── Device detection ───────────────────────────────────────────────────────
+<script>
+'use strict';
+const { Engine, Runner, Bodies, Body, Composite } = Matter;
+
+// ── Device ─────────────────────────────────────────────────────────────────
 const IS_DESKTOP = !('ontouchstart' in window) && !/Mobi|Android/i.test(navigator.userAgent);
 
 // ── Constants ──────────────────────────────────────────────────────────────
@@ -98,663 +63,457 @@ const NUM_BALLS    = 20;
 const RESTITUTION  = 0.88;
 const FRICTION     = 0.0005;
 const FRICTION_AIR = 0.003;
-const ALPHA        = 0.18;
+const SENSOR_ALPHA = 0.18;
+const GAP_TOP_FRAC  = 0.28;   // top gap as fraction of W
+const GAP_SIDE_FRAC = 0.22;   // side gap as fraction of H
+const SPAWN_DELAY   = 350;    // ms between spawns
 
-// Gap sizes as fraction of screen dimension
-const GAP_TOP_W    = 0.28;   // top gap width  (fraction of W)
-const GAP_SIDE_H   = 0.22;   // side gap height (fraction of H)
-
+// ── Mutable state ──────────────────────────────────────────────────────────
 let W, H;
 let engine, runner;
-let balls = [];              // [{ body, radius }, ...]
-let wallBodies = [];         // the boundary wall segments
+let balls   = [];   // [{body, radius}]
+let gaps    = null; // {topL,topR,leftT,leftB,rightT,rightB}
 let ctx2d, glState;
 let ax = 0, ay = 0, az = 0;
 let sensorOk = false;
-let fps = 0, lastTime = performance.now(), frameCount = 0;
+let fps = 0, _lastFpsTime = 0, _frameCount = 0;
 let drawLoopId = null;
-let hasGoneLandscape = false;
+let spawnQueue = 0;
+let lastSpawnMs = 0;
+let lastEscapeMs = 0;
 
-// ── Drag (desktop mouse) ───────────────────────────────────────────────────
-let dragBall   = null;   // { entry, startMx, startMy, startBx, startBy }
-let mouseX = 0, mouseY = 0;
-let prevMouseX = 0, prevMouseY = 0;
-let mouseVX = 0, mouseVY = 0;
+// ── Drag (desktop) ─────────────────────────────────────────────────────────
+let drag = null;          // {entry}
+let mX=0, mY=0, mVX=0, mVY=0;
 
-// ── Orientation ────────────────────────────────────────────────────────────
-function getOrientAngle() {
-  if (screen.orientation && screen.orientation.angle !== undefined)
-    return screen.orientation.angle;
-  return (window.orientation || 0);
+// ── Debug helpers ──────────────────────────────────────────────────────────
+const dbgEl  = document.getElementById('debug');
+const fpsEl  = document.getElementById('fps-box');
+function f1(n){ const s=(+n).toFixed(1); return s==='-0.0'?'0.0':s; }
+function f2(n){ const s=(+n).toFixed(2); return s==='-0.00'?'0.00':s; }
+function f0(n){ const s=(+n).toFixed(0); return s==='-0'?'0':s; }
+function dg(l,v){ return `<span class="dg"><span class="dl">${l}</span><span class="dv">${v}</span></span>`; }
+const SEP = '<span class="ds">|</span>';
+
+function updateDebug(){
+  const b = balls[0]?.body;
+  dbgEl.innerHTML =
+    dg('DEV', IS_DESKTOP?'PC':'MOB') + SEP +
+    dg('SNS', sensorOk?'✓':'✗') + SEP +
+    dg('AX',f1(ax))+SEP+dg('AY',f1(ay))+SEP+dg('AZ',f1(az))+SEP+
+    dg('GX', engine?f2(engine.gravity.x):'--')+SEP+
+    dg('GY', engine?f2(engine.gravity.y):'--')+SEP+
+    dg('POS', b?`${f0(b.position.x)},${f0(b.position.y)}`:'--')+SEP+
+    dg('SPD', b?f1(Math.hypot(b.velocity.x,b.velocity.y)):'--')+SEP+
+    dg('N',   balls.length)+SEP+
+    dg('Q',   spawnQueue);
+  fpsEl.textContent = `FPS ${fps}`;
 }
 
-function computeGravity(rawAx, rawAy) {
-  if (IS_DESKTOP) return { gx: 0, gy: 1 };  // fixed downward gravity on desktop
-  const G   = 9.8;
-  const ang = ((getOrientAngle() % 360) + 360) % 360;
-  let gx, gy;
-  if      (ang < 45 || ang >= 315) { gx =  rawAx/G; gy = -rawAy/G; }
-  else if (ang < 135)              { gx =  rawAy/G; gy =  rawAx/G; }
-  else if (ang < 225)              { gx = -rawAx/G; gy =  rawAy/G; }
-  else                             { gx = -rawAy/G; gy = -rawAx/G; }
-  return { gx, gy };
-}
-
-// ── Debug ──────────────────────────────────────────────────────────────────
-const dbg    = document.getElementById('debug');
-const fpsBox = document.getElementById('fps-box');
-const rotMsg = document.getElementById('rotate-msg');
-
-function fmt1(n) { const s=(+n).toFixed(1); return s==='-0.0'?'0.0':s; }
-function fmt2(n) { const s=(+n).toFixed(2); return s==='-0.00'?'0.00':s; }
-function fmt0(n) { const s=(+n).toFixed(0); return s==='-0'?'0':s; }
-function dg(l,v) { return `<span class="dg"><span class="dl">${l}</span><span class="dv">${v}</span></span>`; }
-const ds = '<span class="ds">|</span>';
-
-function updateDebug() {
-  const b   = balls[0]?.body;
-  const bx  = b ? fmt0(b.position.x) : '--';
-  const by  = b ? fmt0(b.position.y) : '--';
-  const vx  = b ? fmt1(b.velocity.x) : '--';
-  const vy  = b ? fmt1(b.velocity.y) : '--';
-  const spd = b ? fmt1(Math.hypot(b.velocity.x, b.velocity.y)) : '--';
-  const gx  = engine ? fmt2(engine.gravity.x) : '--';
-  const gy  = engine ? fmt2(engine.gravity.y) : '--';
-  dbg.innerHTML =
-    dg('DEV', IS_DESKTOP?'PC':'MOB') + ds +
-    dg('SNS', sensorOk?'✓':'✗') + ds +
-    dg('ANG', getOrientAngle()) + ds +
-    dg('AX', fmt1(ax)) + ds + dg('AY', fmt1(ay)) + ds +
-    dg('GX', gx) + ds + dg('GY', gy) + ds +
-    dg('POS', `${bx},${by}`) + ds +
-    dg('VEL', `${vx},${vy}`) + ds +
-    dg('SPD', spd) + ds +
-    dg('N', balls.length);
-  fpsBox.textContent = `FPS ${fps}`;
-}
-
-function tickFPS() {
-  frameCount++;
+function tickFPS(){
+  _frameCount++;
   const now = performance.now();
-  if (now - lastTime >= 1000) { fps = frameCount; frameCount = 0; lastTime = now; }
+  if (now - _lastFpsTime >= 1000){ fps=_frameCount; _frameCount=0; _lastFpsTime=now; }
 }
 
-// ── Browser UI ─────────────────────────────────────────────────────────────
-function hideBrowserUI() {
+// ── Orientation / gravity ──────────────────────────────────────────────────
+function orientAngle(){
+  if (screen.orientation?.angle !== undefined) return ((screen.orientation.angle%360)+360)%360;
+  return ((+(window.orientation||0))%360+360)%360;
+}
+
+function gravity(){
+  if (IS_DESKTOP) return {gx:0, gy:1};
+  const G = 9.8, a = orientAngle();
+  if (a < 45 || a >= 315) return {gx:  ax/G, gy: -ay/G};
+  if (a < 135)            return {gx:  ay/G, gy:  ax/G};
+  if (a < 225)            return {gx: -ax/G, gy:  ay/G};
+  /* 225-314 */           return {gx: -ay/G, gy: -ax/G};
+}
+
+// ── Browser helpers ────────────────────────────────────────────────────────
+function goFullscreen(){
   const el = document.documentElement;
-  if (el.requestFullscreen) el.requestFullscreen({ navigationUI:'hide' }).catch(()=>{});
-  else if (el.webkitRequestFullscreen) el.webkitRequestFullscreen();
-  window.scrollTo(0,1);
-  setTimeout(()=>window.scrollTo(0,1), 300);
+  (el.requestFullscreen||el.webkitRequestFullscreen||function(){}).call(el,{navigationUI:'hide'});
+  setTimeout(()=>window.scrollTo(0,1), 100);
 }
-function lockLandscape() {
-  if (!IS_DESKTOP) {
-    if (screen.orientation?.lock) screen.orientation.lock('landscape').catch(()=>{});
-    if (screen.lockOrientation)    screen.lockOrientation('landscape');
-    if (screen.mozLockOrientation) screen.mozLockOrientation('landscape');
-    if (screen.msLockOrientation)  screen.msLockOrientation('landscape');
-  }
-}
-function checkOrientation() {
-  if (IS_DESKTOP) return;
-  if (hasGoneLandscape) { rotMsg.classList.remove('show'); return; }
-  if (window.innerWidth > window.innerHeight) { hasGoneLandscape = true; rotMsg.classList.remove('show'); }
-  else rotMsg.classList.add('show');
+function lockLandscape(){
+  const sc = screen;
+  try{ sc.orientation?.lock('landscape'); }catch(e){}
+  (sc.lockOrientation||sc.mozLockOrientation||sc.msLockOrientation||function(){}).call(sc,'landscape');
 }
 
-// ── Gap geometry (global, set in buildWalls) ──────────────────────────────
-let gaps = null;   // { topL, topR, leftT, leftB, rightT, rightB }
+// ── Wall + gap construction ────────────────────────────────────────────────
+function buildWalls(){
+  const T = WALL;
+  const wo = {isStatic:true, restitution:RESTITUTION, friction:FRICTION, label:'wall'};
 
-// Spawn queue: balls waiting to enter. Each tick we check if the gap is clear.
-let spawnQueue = 0;          // how many balls are waiting to be spawned
-let lastSpawnTime = 0;       // performance.now() of last spawn
-const SPAWN_DELAY_MS = 320;  // min ms between consecutive spawns
-
-// ── Walls with gaps ────────────────────────────────────────────────────────
-function buildWalls() {
-  const wo = { isStatic:true, restitution:RESTITUTION, friction:FRICTION, label:'wall' };
-  const T  = WALL;
-  const gapTopW  = W * GAP_TOP_W;
-  const gapSideH = H * GAP_SIDE_H;
-  const halfGTW  = gapTopW  / 2;
-  const halfGSH  = gapSideH / 2;
-
+  const gTW = W * GAP_TOP_FRAC;
+  const gSH = H * GAP_SIDE_FRAC;
   gaps = {
-    topL:   W/2 - halfGTW,  topR:  W/2 + halfGTW,
-    leftT:  H/2 - halfGSH,  leftB: H/2 + halfGSH,
-    rightT: H/2 - halfGSH,  rightB:H/2 + halfGSH,
+    topL:  W/2 - gTW/2,   topR:  W/2 + gTW/2,
+    leftT: H/2 - gSH/2,   leftB: H/2 + gSH/2,
+    rightT:H/2 - gSH/2,   rightB:H/2 + gSH/2,
   };
 
-  // Top: left segment (from x=0 to topL)
-  const topLeftW  = gaps.topL;
-  const topRightW = W - gaps.topR;
-  // Side: top segment height = leftT, bottom segment height = H - leftB
-  const sideTopH  = gaps.leftT;
-  const sideBotH  = H - gaps.leftB;
+  // Top: left segment [0 .. topL], right segment [topR .. W]
+  const tLW = gaps.topL;
+  const tRW = W - gaps.topR;
+  // Sides: top segment [0..leftT], bottom [leftB..H]
+  const sT = gaps.leftT;
+  const sB = H - gaps.leftB;
 
   Composite.add(engine.world, [
-    // Bottom — solid
-    Bodies.rectangle(W/2,         H+T/2,                W+T*2,      T,        wo),
-    // Top — left of gap
-    Bodies.rectangle(topLeftW/2,  -T/2,                 topLeftW,   T,        wo),
-    // Top — right of gap
-    Bodies.rectangle(gaps.topR + topRightW/2, -T/2,     topRightW,  T,        wo),
-    // Left — above gap
-    Bodies.rectangle(-T/2,        sideTopH/2,           T,          sideTopH, wo),
-    // Left — below gap
-    Bodies.rectangle(-T/2,        gaps.leftB+sideBotH/2,T,          sideBotH, wo),
-    // Right — above gap
-    Bodies.rectangle(W+T/2,       sideTopH/2,           T,          sideTopH, wo),
-    // Right — below gap
-    Bodies.rectangle(W+T/2,       gaps.leftB+sideBotH/2,T,          sideBotH, wo),
+    Bodies.rectangle(W/2,                  H + T/2,          W+T*2, T,   wo), // bottom solid
+    Bodies.rectangle(tLW/2,                -T/2,             tLW,   T,   wo), // top-left
+    Bodies.rectangle(gaps.topR + tRW/2,    -T/2,             tRW,   T,   wo), // top-right
+    Bodies.rectangle(-T/2,                 sT/2,             T,     sT,  wo), // left-top
+    Bodies.rectangle(-T/2,  gaps.leftB + sB/2,               T,     sB,  wo), // left-bottom
+    Bodies.rectangle(W+T/2,                sT/2,             T,     sT,  wo), // right-top
+    Bodies.rectangle(W+T/2, gaps.leftB + sB/2,               T,     sB,  wo), // right-bottom
   ]);
 }
 
 // ── Ball factory ────────────────────────────────────────────────────────────
-function makeBall(bx, by, radius) {
-  const rNorm = (radius - RADIUS_MIN) / (RADIUS_MAX - RADIUS_MIN);
+function makeBall(bx, by, radius){
+  const rn = (radius-RADIUS_MIN)/(RADIUS_MAX-RADIUS_MIN);
   const body = Bodies.circle(bx, by, radius, {
-    restitution: RESTITUTION - rNorm*0.08,
+    restitution: RESTITUTION - rn*0.08,
     friction: FRICTION, frictionAir: FRICTION_AIR, density: 0.002,
   });
   Composite.add(engine.world, body);
-  return { body, radius };
+  return {body, radius};
 }
 
-// ── Spawn logic ────────────────────────────────────────────────────────────
-// Returns true if the top-gap area is clear enough to drop a new ball safely.
-function gapIsClear(radius) {
-  if (!gaps) return false;
-  const gCX    = (gaps.topL + gaps.topR) / 2;
-  const clearH = radius * 3.5;   // vertical clearance needed below the gap
-  for (const { body, radius: br } of balls) {
-    const dx = Math.abs(body.position.x - gCX);
-    const dy = body.position.y;   // y from top; small = near top
-    if (dx < (gaps.topR - gaps.topL) / 2 + br && dy < clearH) return false;
+// ── Spawn queue ────────────────────────────────────────────────────────────
+function gapClear(radius){
+  const cx = (gaps.topL + gaps.topR) / 2;
+  const clearY = radius * 4;
+  for (const {body, radius:br} of balls){
+    if (body.position.y < clearY &&
+        Math.abs(body.position.x - cx) < (gaps.topR-gaps.topL)/2 + br)
+      return false;
   }
   return true;
 }
 
-function trySpawn() {
-  if (spawnQueue <= 0) return;
+function trySpawn(){
+  if (!gaps || spawnQueue <= 0) return;
   const now = performance.now();
-  if (now - lastSpawnTime < SPAWN_DELAY_MS) return;
-
-  const radius = RADIUS_MIN + Math.random() * (RADIUS_MAX - RADIUS_MIN);
-  if (!gapIsClear(radius)) return;   // wait until clear
-
-  const gCX    = (gaps.topL + gaps.topR) / 2;
-  const gHalfW = (gaps.topR - gaps.topL) / 2 - radius - 2;
-  const bx     = gCX + (Math.random() - 0.5) * 2 * Math.max(0, gHalfW);
-  const by     = -radius - 2;
-
-  const entry = makeBall(bx, by, radius);
-  Body.setVelocity(entry.body, { x: (Math.random()-0.5)*2, y: 0.5 });
+  if (now - lastSpawnMs < SPAWN_DELAY) return;
+  const radius = RADIUS_MIN + Math.random()*(RADIUS_MAX-RADIUS_MIN);
+  if (!gapClear(radius)) return;
+  const cx    = (gaps.topL + gaps.topR) / 2;
+  const halfW = (gaps.topR - gaps.topL)/2 - radius - 2;
+  const bx    = cx + (Math.random()-0.5)*2*Math.max(0, halfW);
+  const entry = makeBall(bx, -radius-2, radius);
+  Body.setVelocity(entry.body, {x:(Math.random()-0.5)*1.5, y:0.5});
   balls.push(entry);
   spawnQueue--;
-  lastSpawnTime = now;
+  lastSpawnMs = now;
 }
 
-// ── Escape detection ───────────────────────────────────────────────────────
-function isEscaped(entry) {
-  const { x, y } = entry.body.position;
-  const m = RADIUS_MAX * 2;
-  return x < -m || x > W+m || y < -m;
-}
-
-function removeEscaped() {
-  const toRemove = balls.filter(isEscaped);
-  for (const entry of toRemove) {
-    if (dragBall && dragBall.entry === entry) dragBall = null;
-    Composite.remove(engine.world, entry.body);
-    balls.splice(balls.indexOf(entry), 1);
-    spawnQueue++;   // queue a replacement
+// ── Escape detection ────────────────────────────────────────────────────────
+function checkEscapes(){
+  const margin = RADIUS_MAX * 2;
+  for (let i = balls.length-1; i >= 0; i--){
+    const {x,y} = balls[i].body.position;
+    if (x < -margin || x > W+margin || y < -margin){
+      if (drag?.entry === balls[i]) drag = null;
+      Composite.remove(engine.world, balls[i].body);
+      balls.splice(i,1);
+      spawnQueue++;
+    }
   }
 }
 
-// ── Draw gaps on 2D canvas ─────────────────────────────────────────────────
-function drawGaps(c) {
-  if (!gaps) return;
-  const now = performance.now();
-  // Pulse animation: 0..1
-  const pulse = 0.55 + 0.45 * Math.sin(now * 0.003);
-
-  // Helper: draw an arrow pointing inward at a gap
-  function arrowIn(x, y, dirX, dirY, len) {
-    const ex = x + dirX * len, ey = y + dirY * len;
-    // Line
-    c.beginPath(); c.moveTo(x, y); c.lineTo(ex, ey); c.stroke();
-    // Arrowhead
-    const hw = 6, hl = 9;
-    const px = -dirY, py = dirX;  // perpendicular
-    c.beginPath();
-    c.moveTo(ex, ey);
-    c.lineTo(ex - dirX*hl + px*hw, ey - dirY*hl + py*hw);
-    c.lineTo(ex - dirX*hl - px*hw, ey - dirY*hl - py*hw);
-    c.closePath(); c.fill();
-  }
-
-  const alpha = 0.25 + 0.35 * pulse;
-  c.fillStyle   = `rgba(0,255,120,${alpha})`;
-  c.strokeStyle = `rgba(0,255,120,${alpha})`;
-  c.lineWidth   = 1.5;
-
-  const arrowLen = 14;
-
-  // ── Top gap: two inward arrows from above, plus bracket lines ────────────
-  const topCX = (gaps.topL + gaps.topR) / 2;
-  const topW  = gaps.topR - gaps.topL;
-
-  // Bracket lines (vertical stubs marking gap edges)
-  c.beginPath();
-  c.moveTo(gaps.topL, 0); c.lineTo(gaps.topL, 8);
-  c.moveTo(gaps.topR, 0); c.lineTo(gaps.topR, 8);
-  c.stroke();
-  // Horizontal line connecting the brackets at y=0
-  c.beginPath();
-  c.moveTo(gaps.topL, 0); c.lineTo(gaps.topR, 0);
-  c.stroke();
-  // Arrow pointing down (into the field)
-  arrowIn(topCX, 0, 0, 1, arrowLen);
-
-  // ── Left gap ──────────────────────────────────────────────────────────────
-  const leftCY = (gaps.leftT + gaps.leftB) / 2;
-  c.beginPath();
-  c.moveTo(0, gaps.leftT); c.lineTo(8, gaps.leftT);
-  c.moveTo(0, gaps.leftB); c.lineTo(8, gaps.leftB);
-  c.stroke();
-  c.beginPath();
-  c.moveTo(0, gaps.leftT); c.lineTo(0, gaps.leftB);
-  c.stroke();
-  arrowIn(0, leftCY, 1, 0, arrowLen);
-
-  // ── Right gap ─────────────────────────────────────────────────────────────
-  const rightCY = (gaps.rightT + gaps.rightB) / 2;
-  c.beginPath();
-  c.moveTo(W, gaps.rightT); c.lineTo(W-8, gaps.rightT);
-  c.moveTo(W, gaps.rightB); c.lineTo(W-8, gaps.rightB);
-  c.stroke();
-  c.beginPath();
-  c.moveTo(W, gaps.rightT); c.lineTo(W, gaps.rightB);
-  c.stroke();
-  arrowIn(W, rightCY, -1, 0, arrowLen);
-
-  // ── Label on top gap (spawn point) ────────────────────────────────────────
-  c.globalAlpha = alpha * 0.9;
-  c.font = '9px Courier New';
-  c.fillStyle = '#00ff78';
-  c.textAlign = 'center';
-  c.fillText('SPAWN', topCX, 20);
-  c.textAlign = 'left';
-  c.globalAlpha = 1;
-}
-function initGL() {
+// ── WebGL ──────────────────────────────────────────────────────────────────
+function initGL(){
   const canvas = document.getElementById('gl');
-  canvas.width = W; canvas.height = H;
-  const g = canvas.getContext('webgl', { alpha:false, premultipliedAlpha:false }) ||
-            canvas.getContext('experimental-webgl', { alpha:false });
-  if (!g) return null;
+  canvas.width=W; canvas.height=H;
+  const g = canvas.getContext('webgl',{alpha:false}) ||
+            canvas.getContext('experimental-webgl',{alpha:false});
+  if (!g){ console.warn('No WebGL'); return null; }
 
-  const bgVsrc = `
-    attribute vec2 aPos; varying vec2 vUv;
-    void main(){ vUv=aPos*.5+.5; gl_Position=vec4(aPos,0.,1.); }`;
-  const bgFsrc = `
-    precision mediump float;
-    varying vec2 vUv; uniform vec2 uRes;
-    float grid(vec2 px){
-      float gs=34.; float lw=0.65; vec2 g=mod(px,gs);
-      return max(smoothstep(lw+1.,lw,abs(g.y)),smoothstep(lw+1.,lw,abs(g.x)));
-    }
-    void main(){
-      vec2 px=vUv*uRes; px.y=uRes.y-px.y;
-      vec3 bgD=vec3(.040,.040,.072),bgL=vec3(.155,.195,.270);
-      gl_FragColor=vec4(mix(bgD,bgL,grid(px)),1.);
-    }`;
+  const bgVS=`attribute vec2 aPos;varying vec2 vUv;void main(){vUv=aPos*.5+.5;gl_Position=vec4(aPos,0.,1.);}`;
+  const bgFS=`precision mediump float;varying vec2 vUv;uniform vec2 uRes;
+    float grid(vec2 p){float s=34.,w=.65;vec2 g=mod(p,s);return max(smoothstep(w+1.,w,abs(g.y)),smoothstep(w+1.,w,abs(g.x)));}
+    void main(){vec2 p=vUv*uRes;p.y=uRes.y-p.y;vec3 d=vec3(.04,.04,.072),l=vec3(.155,.195,.27);gl_FragColor=vec4(mix(d,l,grid(p)),1.);}`;
 
-  const ballVsrc = `
-    attribute vec2 aPos; varying vec2 vPx; uniform vec2 uRes;
+  const bVS=`attribute vec2 aPos;varying vec2 vPx;uniform vec2 uRes;
+    void main(){vPx=(aPos*.5+.5)*uRes;vPx.y=uRes.y-vPx.y;gl_Position=vec4(aPos,0.,1.);}`;
+  const bFS=`precision highp float;
+    varying vec2 vPx;uniform vec2 uRes,uBall;uniform float uR,uDrag;
+    float grid(vec2 p){float s=34.,w=.65;vec2 g=mod(p,s);return max(smoothstep(w+1.,w,abs(g.y)),smoothstep(w+1.,w,abs(g.x)));}
+    vec3 bg(vec2 p){return mix(vec3(.04,.04,.072),vec3(.155,.195,.27),grid(p));}
     void main(){
-      vPx=(aPos*.5+.5)*uRes; vPx.y=uRes.y-vPx.y;
-      gl_Position=vec4(aPos,0.,1.);
-    }`;
-  const ballFsrc = `
-    precision highp float;
-    varying vec2 vPx; uniform vec2 uRes,uBall; uniform float uRadius; uniform float uDrag;
-    float grid(vec2 px){
-      float gs=34.;float lw=0.65;vec2 g=mod(px,gs);
-      return max(smoothstep(lw+1.,lw,abs(g.y)),smoothstep(lw+1.,lw,abs(g.x)));
-    }
-    vec3 bgColor(vec2 px){ vec3 bgD=vec3(.040,.040,.072),bgL=vec3(.155,.195,.270); return mix(bgD,bgL,grid(px)); }
-    void main(){
-      vec2 d=vPx-uBall; float dist=length(d); float r=uRadius; float haloW=r*.40; float outerR=r+haloW;
-      if(dist>outerR){ gl_FragColor=vec4(0.); return; }
+      vec2 d=vPx-uBall;float dist=length(d),r=uR,hw=r*.4,or2=r+hw;
+      if(dist>or2){gl_FragColor=vec4(0.);return;}
       if(dist>r){
-        float t=(dist-r)/haloW;
-        // Brighter halo when dragging
-        float hStr = 0.42 + uDrag*0.35;
-        float h=exp(-t*t*4.5)*hStr;
-        vec3 hCol=mix(vec3(0.50,0.75,1.00), vec3(1.00,0.85,0.30), uDrag);
-        gl_FragColor=vec4(hCol*h,h); return;
+        float t=(dist-r)/hw;
+        float h=exp(-t*t*4.5)*(0.42+uDrag*.35);
+        vec3 hc=mix(vec3(.5,.75,1.),vec3(1.,.85,.3),uDrag);
+        gl_FragColor=vec4(hc*h,h);return;
       }
-      float nd=dist/r; float nz=sqrt(max(0.,1.-nd*nd));
-      vec3 N=normalize(vec3(d/r,nz)); vec3 I=vec3(0.,0.,-1.);
-      float eta=1./1.55; float cosI=nz; float sin2T=eta*eta*(1.-cosI*cosI);
-      vec2 bgOffset;
-      if(sin2T>1.){ vec3 refl=I-2.*dot(I,N)*N; bgOffset=refl.xy*r*1.5; }
-      else{
-        float cosT=sqrt(1.-sin2T); vec3 refr=eta*I+(eta*cosI-cosT)*N;
-        float depth=1.5*r; float t_hit=-depth/refr.z; bgOffset=refr.xy*t_hit;
-      }
-      vec2 samplePx=clamp(uBall+bgOffset,vec2(0.),uRes);
-      vec2 sPx=vec2(samplePx.x,uRes.y-samplePx.y);
-      vec3 col=bgColor(sPx);
-      col+=vec3(0.70,0.88,1.00)*0.05*(0.3+0.7*(1.-nz));
-      vec2 sp1=d-vec2(-r*.36,-r*.36); col+=vec3(1.)*exp(-dot(sp1,sp1)/(2.*(r*.19)*(r*.19)))*0.20;
-      vec2 sp2=d+vec2(r*.20,r*.26);   col+=vec3(1.)*exp(-dot(sp2,sp2)/(2.*(r*.048)*(r*.048)))*0.45;
-      float edge=smoothstep(1.,.90,nd);
-      col=mix(bgColor(vPx),col,edge);
-      gl_FragColor=vec4(col,edge);
+      float nd=dist/r,nz=sqrt(max(0.,1.-nd*nd));
+      vec3 N=normalize(vec3(d/r,nz));
+      float eta=1./1.55,ci=nz,s2t=eta*eta*(1.-ci*ci);
+      vec2 off;
+      if(s2t>1.){vec3 rf=vec3(0.,0.,-1.)-2.*dot(vec3(0.,0.,-1.),N)*N;off=rf.xy*r*1.5;}
+      else{float ct=sqrt(1.-s2t);vec3 rv=eta*vec3(0.,0.,-1.)+(eta*ci-ct)*N;off=rv.xy*(-1.5*r/rv.z);}
+      vec2 sp=clamp(uBall+off,vec2(0.),uRes);
+      vec3 col=bg(vec2(sp.x,uRes.y-sp.y));
+      col+=vec3(.7,.88,1.)*.05*(.3+.7*(1.-nz));
+      vec2 s1=d-vec2(-r*.36,-r*.36);col+=exp(-dot(s1,s1)/(2.*(r*.19)*(r*.19)))*.20;
+      vec2 s2=d+vec2(r*.2,r*.26);  col+=exp(-dot(s2,s2)/(2.*(r*.048)*(r*.048)))*.45;
+      float e=smoothstep(1.,.9,nd);
+      gl_FragColor=vec4(mix(bg(vPx),col,e),e);
     }`;
 
-  function compile(type,src){
-    const s=g.createShader(type); g.shaderSource(s,src); g.compileShader(s);
-    if(!g.getShaderParameter(s,g.COMPILE_STATUS)){console.error(g.getShaderInfoLog(s));return null;}
+  function sh(type,src){
+    const s=g.createShader(type);g.shaderSource(s,src);g.compileShader(s);
+    if(!g.getShaderParameter(s,g.COMPILE_STATUS)){console.error('Shader:',g.getShaderInfoLog(s));return null;}
     return s;
   }
-  function makeProgram(vs,fs){
+  function prog(vs,fs){
     const p=g.createProgram();
-    g.attachShader(p,compile(g.VERTEX_SHADER,vs));
-    g.attachShader(p,compile(g.FRAGMENT_SHADER,fs));
+    g.attachShader(p,sh(g.VERTEX_SHADER,vs));
+    g.attachShader(p,sh(g.FRAGMENT_SHADER,fs));
     g.linkProgram(p);
-    if(!g.getProgramParameter(p,g.LINK_STATUS)){console.error(g.getProgramInfoLog(p));return null;}
+    if(!g.getProgramParameter(p,g.LINK_STATUS)){console.error('Program:',g.getProgramInfoLog(p));return null;}
     return p;
   }
 
-  const bgProg=makeProgram(bgVsrc,bgFsrc), ballProg=makeProgram(ballVsrc,ballFsrc);
-  const fsqBuf=g.createBuffer();
-  g.bindBuffer(g.ARRAY_BUFFER,fsqBuf);
+  const bgP=prog(bgVS,bgFS), bP=prog(bVS,bFS);
+  const fsqB=g.createBuffer();
+  g.bindBuffer(g.ARRAY_BUFFER,fsqB);
   g.bufferData(g.ARRAY_BUFFER,new Float32Array([-1,-1,1,-1,-1,1,1,1]),g.STATIC_DRAW);
-  const ballBuf=g.createBuffer();
+  const bB=g.createBuffer();
 
   return {
-    g, bgProg, ballProg, fsqBuf, ballBuf,
-    bg_aPos:   g.getAttribLocation(bgProg,  'aPos'),
-    bg_uRes:   g.getUniformLocation(bgProg, 'uRes'),
-    ball_aPos: g.getAttribLocation(ballProg, 'aPos'),
-    ball_uRes: g.getUniformLocation(ballProg,'uRes'),
-    ball_uBall:g.getUniformLocation(ballProg,'uBall'),
-    ball_uRad: g.getUniformLocation(ballProg,'uRadius'),
-    ball_uDrag:g.getUniformLocation(ballProg,'uDrag'),
+    g, bgP, bP, fsqB, bB,
+    bgA: g.getAttribLocation(bgP,'aPos'),
+    bgR: g.getUniformLocation(bgP,'uRes'),
+    bA:  g.getAttribLocation(bP,'aPos'),
+    bR:  g.getUniformLocation(bP,'uRes'),
+    bC:  g.getUniformLocation(bP,'uBall'),
+    bRad:g.getUniformLocation(bP,'uR'),
+    bDrg:g.getUniformLocation(bP,'uDrag'),
   };
 }
 
-function renderGL() {
+function renderGL(){
   if (!glState) return;
-  const {g,bgProg,ballProg,fsqBuf,ballBuf,
-         bg_aPos,bg_uRes,ball_aPos,ball_uRes,ball_uBall,ball_uRad,ball_uDrag} = glState;
+  const {g,bgP,bP,fsqB,bB,bgA,bgR,bA,bR,bC,bRad,bDrg}=glState;
   g.viewport(0,0,W,H);
+
+  // Pass A: background
   g.disable(g.BLEND);
-  g.useProgram(bgProg);
-  g.bindBuffer(g.ARRAY_BUFFER,fsqBuf);
-  g.enableVertexAttribArray(bg_aPos);
-  g.vertexAttribPointer(bg_aPos,2,g.FLOAT,false,0,0);
-  g.uniform2f(bg_uRes,W,H);
+  g.useProgram(bgP);
+  g.bindBuffer(g.ARRAY_BUFFER,fsqB);
+  g.enableVertexAttribArray(bgA); g.vertexAttribPointer(bgA,2,g.FLOAT,false,0,0);
+  g.uniform2f(bgR,W,H);
   g.drawArrays(g.TRIANGLE_STRIP,0,4);
 
-  g.enable(g.BLEND);
-  g.blendFunc(g.SRC_ALPHA,g.ONE_MINUS_SRC_ALPHA);
-  g.useProgram(ballProg);
-  g.uniform2f(ball_uRes,W,H);
-
+  // Pass B: each ball (sorted largest first)
+  g.enable(g.BLEND); g.blendFunc(g.SRC_ALPHA,g.ONE_MINUS_SRC_ALPHA);
+  g.useProgram(bP); g.uniform2f(bR,W,H);
   const sorted=[...balls].sort((a,b)=>b.radius-a.radius);
-  for (const entry of sorted) {
-    const {body,radius}=entry;
-    const cx=body.position.x, cy=body.position.y;
-    const ext=radius*1.45;
-    const x0=(cx-ext)/W*2-1, x1=(cx+ext)/W*2-1;
-    const y0=1-(cy+ext)/H*2, y1=1-(cy-ext)/H*2;
-    const verts=new Float32Array([x0,y1,x1,y1,x0,y0,x1,y0]);
-    g.bindBuffer(g.ARRAY_BUFFER,ballBuf);
-    g.bufferData(g.ARRAY_BUFFER,verts,g.DYNAMIC_DRAW);
-    g.enableVertexAttribArray(ball_aPos);
-    g.vertexAttribPointer(ball_aPos,2,g.FLOAT,false,0,0);
-    g.uniform2f(ball_uBall,cx,cy);
-    g.uniform1f(ball_uRad,radius);
-    g.uniform1f(ball_uDrag, dragBall && dragBall.entry===entry ? 1.0 : 0.0);
+  for (const entry of sorted){
+    const {body:{position:{x:cx,y:cy}},radius}=entry;
+    const e=radius*1.45;
+    const verts=new Float32Array([
+      (cx-e)/W*2-1, 1-(cy+e)/H*2,
+      (cx+e)/W*2-1, 1-(cy+e)/H*2,
+      (cx-e)/W*2-1, 1-(cy-e)/H*2,
+      (cx+e)/W*2-1, 1-(cy-e)/H*2,
+    ]);
+    g.bindBuffer(g.ARRAY_BUFFER,bB); g.bufferData(g.ARRAY_BUFFER,verts,g.DYNAMIC_DRAW);
+    g.enableVertexAttribArray(bA); g.vertexAttribPointer(bA,2,g.FLOAT,false,0,0);
+    g.uniform2f(bC,cx,cy); g.uniform1f(bRad,radius);
+    g.uniform1f(bDrg, drag?.entry===entry ? 1.0 : 0.0);
     g.drawArrays(g.TRIANGLE_STRIP,0,4);
   }
 }
 
-// ── Draw gaps on 2D canvas ─────────────────────────────────────────────────
-function drawGaps(c) {
-  const gaps = W._gaps;
+// ── 2D gap visuals ──────────────────────────────────────────────────────────
+function drawGaps(c){
   if (!gaps) return;
-  const T = WALL;
-
-  // Highlight the openings with a subtle glow so the player can see them
-  c.strokeStyle = 'rgba(0,255,120,0.30)';
+  const pulse = 0.55 + 0.45*Math.sin(performance.now()*0.003);
+  const a = 0.28 + 0.30*pulse;
+  c.strokeStyle = `rgba(0,255,120,${a})`;
+  c.fillStyle   = `rgba(0,255,120,${a})`;
   c.lineWidth   = 2;
-  c.setLineDash([6,4]);
+
+  function bracket(x0,y0,x1,y1){ c.beginPath();c.moveTo(x0,y0);c.lineTo(x1,y1);c.stroke(); }
+  function arrow(ox,oy,dx,dy,len){
+    const ex=ox+dx*len,ey=oy+dy*len;
+    c.beginPath();c.moveTo(ox,oy);c.lineTo(ex,ey);c.stroke();
+    const px=-dy,py=dx,hw=5,hl=8;
+    c.beginPath();c.moveTo(ex,ey);
+    c.lineTo(ex-dx*hl+px*hw,ey-dy*hl+py*hw);
+    c.lineTo(ex-dx*hl-px*hw,ey-dy*hl-py*hw);
+    c.closePath();c.fill();
+  }
 
   // Top gap
-  c.beginPath();
-  c.moveTo(gaps.topL, 0); c.lineTo(gaps.topR, 0);
-  c.stroke();
+  const tCX=(gaps.topL+gaps.topR)/2;
+  bracket(gaps.topL,0,gaps.topL,10); bracket(gaps.topR,0,gaps.topR,10);
+  bracket(gaps.topL,0,gaps.topR,0);
+  arrow(tCX,0,0,1,16);
+  c.globalAlpha=a*0.9; c.font='9px Courier New'; c.textAlign='center';
+  c.fillText('SPAWN',tCX,22); c.textAlign='left'; c.globalAlpha=1;
 
   // Left gap
-  c.beginPath();
-  c.moveTo(0, gaps.leftT); c.lineTo(0, gaps.leftB);
-  c.stroke();
+  const lCY=(gaps.leftT+gaps.leftB)/2;
+  bracket(0,gaps.leftT,10,gaps.leftT); bracket(0,gaps.leftB,10,gaps.leftB);
+  bracket(0,gaps.leftT,0,gaps.leftB);
+  arrow(0,lCY,1,0,16);
 
   // Right gap
-  c.beginPath();
-  c.moveTo(W, gaps.rightT); c.lineTo(W, gaps.rightB);
-  c.stroke();
-
-  c.setLineDash([]);
+  const rCY=(gaps.rightT+gaps.rightB)/2;
+  bracket(W,gaps.rightT,W-10,gaps.rightT); bracket(W,gaps.rightB,W-10,gaps.rightB);
+  bracket(W,gaps.rightT,W,gaps.rightB);
+  arrow(W,rCY,-1,0,16);
 }
 
-// ── Build world ────────────────────────────────────────────────────────────
-function buildWorld() {
-  if (runner) Runner.stop(runner);
-  if (engine) Composite.clear(engine.world, false);
-  dragBall = null;
+// ── Main loop ───────────────────────────────────────────────────────────────
+function drawLoop(){
+  drawLoopId = requestAnimationFrame(drawLoop);
+  tickFPS();
 
-  W = window.innerWidth;
-  H = window.innerHeight;
+  // Apply gravity
+  const {gx,gy}=gravity();
+  engine.gravity.x=gx; engine.gravity.y=gy;
 
-  const c2d=document.getElementById('c2d');
-  c2d.width=W; c2d.height=H;
-  ctx2d=c2d.getContext('2d');
+  // Drag
+  if (drag){
+    Body.setVelocity(drag.entry.body,{x:mVX*.6,y:mVY*.6});
+    Body.setPosition(drag.entry.body,{
+      x: drag.entry.body.position.x+(mX-drag.entry.body.position.x)*.35,
+      y: drag.entry.body.position.y+(mY-drag.entry.body.position.y)*.35,
+    });
+  }
 
-  const glCanvas=document.getElementById('gl');
-  glCanvas.width=W; glCanvas.height=H;
+  // Escape + spawn
+  const now=performance.now();
+  if (now-lastEscapeMs > 150){ checkEscapes(); lastEscapeMs=now; }
+  trySpawn();
+
+  // Render
+  renderGL();
+  const c=ctx2d;
+  c.clearRect(0,0,W,H);
+  drawGaps(c);
+
+  // Corner brackets
+  c.strokeStyle='rgba(0,255,120,0.11)'; c.lineWidth=1;
+  [[0,0],[W,0],[0,H],[W,H]].forEach(([cx,cy])=>{
+    const sx=cx?-1:1,sy=cy?-1:1;
+    c.beginPath();c.moveTo(cx+sx*22,cy);c.lineTo(cx,cy);c.lineTo(cx,cy+sy*22);c.stroke();
+  });
+
+  // Trails
+  for (const {body,radius} of balls){
+    const spd=Math.hypot(body.velocity.x,body.velocity.y);
+    if (spd>1.5){
+      const nx=-body.velocity.x/spd,ny=-body.velocity.y/spd,tl=Math.min(spd*3.5,70);
+      const tg=c.createLinearGradient(body.position.x,body.position.y,body.position.x+nx*tl,body.position.y+ny*tl);
+      tg.addColorStop(0,'rgba(180,220,255,0.15)'); tg.addColorStop(1,'rgba(180,220,255,0)');
+      c.beginPath();c.moveTo(body.position.x+nx*radius*.85,body.position.y+ny*radius*.85);
+      c.lineTo(body.position.x+nx*tl,body.position.y+ny*tl);
+      c.lineWidth=radius*.6;c.lineCap='round';c.strokeStyle=tg;c.stroke();
+    }
+  }
+
+  updateDebug();
+}
+
+// ── Build world ─────────────────────────────────────────────────────────────
+function buildWorld(){
+  if (runner){ Runner.stop(runner); runner=null; }
+  if (drawLoopId){ cancelAnimationFrame(drawLoopId); drawLoopId=null; }
+  drag=null; balls=[];
+
+  W=window.innerWidth; H=window.innerHeight;
+
+  document.getElementById('c2d').width=W;
+  document.getElementById('c2d').height=H;
+  ctx2d=document.getElementById('c2d').getContext('2d');
+
+  document.getElementById('gl').width=W;
+  document.getElementById('gl').height=H;
   glState=initGL();
 
-  engine=Engine.create({ gravity:{x:0,y:0,scale:0.001} });
+  engine=Engine.create({gravity:{x:0,y:0,scale:0.001}});
   engine.positionIterations=10;
   engine.velocityIterations=8;
   engine.constraintIterations=4;
 
   buildWalls();
 
-  // Queue all initial balls — they'll enter through the top gap
-  balls = [];
-  spawnQueue = NUM_BALLS;
-  lastSpawnTime = 0;
+  // Queue NUM_BALLS to spawn through the top gap
+  spawnQueue=NUM_BALLS;
+  lastSpawnMs=0;
+  lastEscapeMs=0;
 
   runner=Runner.create();
   Runner.run(runner,engine);
-
-  if (drawLoopId) cancelAnimationFrame(drawLoopId);
   drawLoop();
 }
 
-// ── Render loop ────────────────────────────────────────────────────────────
-let lastEscapeCheck = 0;
-
-function drawLoop() {
-  drawLoopId=requestAnimationFrame(drawLoop);
-  tickFPS();
-
-  // Gravity
-  const gx,gy}=computeGravity(ax,ay);
-  engine.gravity.x=gx;
-  engine.gravity.y=gy;
-
-  // Drag: kinematically move dragged ball toward mouse each frame
-  if (dragBall) {
-    const { entry } = dragBall;
-    const targetX = mouseX;
-    const targetY = mouseY;
-    // Set velocity to move toward mouse (spring-like but instant for crisp feel)
-    Body.setVelocity(entry.body, { x: mouseVX * 0.6, y: mouseVY * 0.6 });
-    Body.setPosition(entry.body, {
-      x: entry.body.position.x + (targetX - entry.body.position.x) * 0.35,
-      y: entry.body.position.y + (targetY - entry.body.position.y) * 0.35,
-    });
-  }
-
-  // Escape detection every 150ms, then try to spawn queued balls
-  const nowMs = performance.now();
-  if (nowMs - lastEscapeCheck > 150) { removeEscaped(); lastEscapeCheck = nowMs; }
-  trySpawn();
-
-  renderGL();
-
-  const c=ctx2d;
-  c.clearRect(0,0,W,H);
-
-  // Draw gap indicators
-  drawGaps(c);
-
-  // Corner brackets
-  const br=22;
-  c.strokeStyle='rgba(0,255,120,0.11)'; c.lineWidth=1;
-  [[0,0],[W,0],[0,H],[W,H]].forEach(([cx,cy])=>{
-    const sx=cx===0?1:-1,sy=cy===0?1:-1;
-    c.beginPath(); c.moveTo(cx+sx*br,cy); c.lineTo(cx,cy); c.lineTo(cx,cy+sy*br); c.stroke();
-  });
-
-  // Trails
-  for (const {body,radius} of balls) {
-    const bx=body.position.x,by=body.position.y;
-    const spd=Math.hypot(body.velocity.x,body.velocity.y);
-    if (spd>1.5) {
-      const nx=-body.velocity.x/spd,ny=-body.velocity.y/spd;
-      const tl=Math.min(spd*3.5,70);
-      const tg=c.createLinearGradient(bx,by,bx+nx*tl,by+ny*tl);
-      tg.addColorStop(0,'rgba(180,220,255,0.15)');
-      tg.addColorStop(1,'rgba(180,220,255,0)');
-      c.beginPath();
-      c.moveTo(bx+nx*radius*0.85,by+ny*radius*0.85);
-      c.lineTo(bx+nx*tl,by+ny*tl);
-      c.lineWidth=radius*0.6; c.lineCap='round'; c.strokeStyle=tg; c.stroke();
-    }
-  }
-
-  // Draw drag target indicator
-  if (IS_DESKTOP && dragBall) {
-    c.strokeStyle='rgba(255,210,60,0.45)'; c.lineWidth=1.5;
-    c.setLineDash([4,4]);
-    const r=dragBall.entry.radius;
-    c.beginPath(); c.arc(mouseX,mouseY,r*0.6,0,Math.PI*2); c.stroke();
-    c.setLineDash([]);
-  }
-
-  updateDebug();
-}
-
-// ── Desktop mouse drag ─────────────────────────────────────────────────────
-function setupMouseDrag() {
-  const canvas = document.getElementById('c2d');
-
-  function getPos(e) {
-    const rect = canvas.getBoundingClientRect();
-    return { x: e.clientX - rect.left, y: e.clientY - rect.top };
-  }
-
-  canvas.addEventListener('mousedown', e => {
-    const { x, y } = getPos(e);
-    mouseX = x; mouseY = y;
-    // Find ball under cursor (smallest radius first = pick top-most visually)
-    const sorted = [...balls].sort((a,b) => a.radius - b.radius);
-    for (const entry of sorted) {
-      const dx = entry.body.position.x - x;
-      const dy = entry.body.position.y - y;
-      if (Math.hypot(dx,dy) <= entry.radius) {
-        dragBall = { entry };
-        Body.setStatic(entry.body, true);  // freeze physics while dragging
-        e.preventDefault();
-        break;
+// ── Desktop mouse drag ──────────────────────────────────────────────────────
+function setupDrag(){
+  const el=document.getElementById('c2d');
+  function pos(e){ const r=el.getBoundingClientRect(); return {x:e.clientX-r.left,y:e.clientY-r.top}; }
+  el.addEventListener('mousedown',e=>{
+    const {x,y}=pos(e); mX=x;mY=y;
+    for (const entry of [...balls].sort((a,b)=>a.radius-b.radius)){
+      if (Math.hypot(entry.body.position.x-x,entry.body.position.y-y)<=entry.radius){
+        drag={entry}; Body.setStatic(entry.body,true); e.preventDefault(); break;
       }
     }
   });
-
-  canvas.addEventListener('mousemove', e => {
-    const { x, y } = getPos(e);
-    prevMouseX = mouseX; prevMouseY = mouseY;
-    mouseX = x; mouseY = y;
-    mouseVX = mouseX - prevMouseX;
-    mouseVY = mouseY - prevMouseY;
+  el.addEventListener('mousemove',e=>{
+    const {x,y}=pos(e); mVX=x-mX;mVY=y-mY; mX=x;mY=y;
   });
-
-  function endDrag() {
-    if (dragBall) {
-      Body.setStatic(dragBall.entry.body, false);
-      // Transfer mouse velocity to ball on release
-      Body.setVelocity(dragBall.entry.body, { x: mouseVX * 1.2, y: mouseVY * 1.2 });
-      dragBall = null;
-    }
-  }
-
-  canvas.addEventListener('mouseup', endDrag);
-  canvas.addEventListener('mouseleave', endDrag);
+  function end(){ if(drag){ Body.setStatic(drag.entry.body,false); Body.setVelocity(drag.entry.body,{x:mVX*1.2,y:mVY*1.2}); drag=null; } }
+  el.addEventListener('mouseup',end); el.addEventListener('mouseleave',end);
 }
 
-// ── Accelerometer (mobile) ─────────────────────────────────────────────────
-function startSensor() {
-  if (IS_DESKTOP) { sensorOk = true; return; }
-  function onMotion(e) {
-    const a=e.accelerationIncludingGravity;
-    if(!a) return;
-    ax=ax+ALPHA*((a.x||0)-ax);
-    ay=ay+ALPHA*((a.y||0)-ay);
-    az=az+ALPHA*((a.z||0)-az);
+// ── Sensor ──────────────────────────────────────────────────────────────────
+function startSensor(){
+  if (IS_DESKTOP){ sensorOk=true; return; }
+  function onM(e){
+    const a=e.accelerationIncludingGravity; if(!a) return;
+    ax+=SENSOR_ALPHA*((a.x||0)-ax);
+    ay+=SENSOR_ALPHA*((a.y||0)-ay);
+    az+=SENSOR_ALPHA*((a.z||0)-az);
     sensorOk=true;
   }
-  if (typeof DeviceMotionEvent!=='undefined' &&
-      typeof DeviceMotionEvent.requestPermission==='function') {
-    DeviceMotionEvent.requestPermission()
-      .then(s=>{ if(s==='granted') window.addEventListener('devicemotion',onMotion); })
-      .catch(()=>{});
-  } else if (typeof DeviceMotionEvent!=='undefined') {
-    window.addEventListener('devicemotion',onMotion);
+  if (typeof DeviceMotionEvent!=='undefined' && typeof DeviceMotionEvent.requestPermission==='function'){
+    DeviceMotionEvent.requestPermission().then(s=>{ if(s==='granted') window.addEventListener('devicemotion',onM); }).catch(()=>{});
+  } else if (typeof DeviceMotionEvent!=='undefined'){
+    window.addEventListener('devicemotion',onM);
   }
 }
 
-// ── Resize ─────────────────────────────────────────────────────────────────
-let gameStarted = false;
-window.addEventListener('resize', ()=>{
-  if (!gameStarted) checkOrientation();
-  else buildWorld();
-});
+// ── Resize ───────────────────────────────────────────────────────────────────
+window.addEventListener('resize', ()=>{ if(gameStarted) buildWorld(); });
 
-// ── Start ──────────────────────────────────────────────────────────────────
-// Set overlay text based on device
-document.getElementById('overlay-desc').textContent = IS_DESKTOP
-  ? 'Las bolas caen por gravedad. Arrastra las bolas con el ratón. Las bolas pueden escapar por las aperturas laterales y superior.'
-  : 'Inclina el móvil para controlar las bolas con el acelerómetro. Las bolas pueden escapar por las aperturas.';
+// ── Init overlay ─────────────────────────────────────────────────────────────
+let gameStarted=false;
+document.getElementById('odesc').textContent = IS_DESKTOP
+  ? 'Gravedad fija hacia abajo. Arrastra bolas con el ratón. Las bolas escapan por las aperturas.'
+  : 'Inclina el móvil para mover las bolas. Las bolas escapan por las aperturas.';
 
 document.getElementById('btn-start').addEventListener('click', ()=>{
-  gameStarted = true;
-  if (!IS_DESKTOP) { lockLandscape(); hideBrowserUI(); }
-  document.getElementById('permission-overlay').style.display='none';
-  rotMsg.classList.remove('show');
-  rotMsg.style.display = 'none';
+  gameStarted=true;
+  document.getElementById('overlay').style.display='none';
+  if (!IS_DESKTOP){ lockLandscape(); goFullscreen(); }
   buildWorld();
   startSensor();
-  if (IS_DESKTOP) setupMouseDrag();
+  if (IS_DESKTOP) setupDrag();
 });
 </script>
 </body>
