@@ -591,12 +591,14 @@ function buildWorld() {
 }
 
 // ── Render loop ────────────────────────────────────────────────────────────
+let lastEscapeCheck = 0;
+
 function drawLoop() {
   drawLoopId=requestAnimationFrame(drawLoop);
   tickFPS();
 
   // Gravity
-  const {gx,gy}=computeGravity(ax,a);
+  const gx,gy}=computeGravity(ax,ay);
   engine.gravity.x=gx;
   engine.gravity.y=gy;
 
@@ -613,8 +615,9 @@ function drawLoop() {
     });
   }
 
-  // Escape detection every ~10 frames, then try to spawn queued balls
-  if (frameCount % 10 === 0) removeEscaped();
+  // Escape detection every 150ms, then try to spawn queued balls
+  const nowMs = performance.now();
+  if (nowMs - lastEscapeCheck > 150) { removeEscaped(); lastEscapeCheck = nowMs; }
   trySpawn();
 
   renderGL();
@@ -731,7 +734,11 @@ function startSensor() {
 }
 
 // ── Resize ─────────────────────────────────────────────────────────────────
-window.addEventListener('resize', ()=>{ checkOrientation(); buildWorld(); });
+let gameStarted = false;
+window.addEventListener('resize', ()=>{
+  if (!gameStarted) checkOrientation();
+  else buildWorld();
+});
 
 // ── Start ──────────────────────────────────────────────────────────────────
 // Set overlay text based on device
@@ -740,9 +747,11 @@ document.getElementById('overlay-desc').textContent = IS_DESKTOP
   : 'Inclina el móvil para controlar las bolas con el acelerómetro. Las bolas pueden escapar por las aperturas.';
 
 document.getElementById('btn-start').addEventListener('click', ()=>{
+  gameStarted = true;
   if (!IS_DESKTOP) { lockLandscape(); hideBrowserUI(); }
   document.getElementById('permission-overlay').style.display='none';
-  checkOrientation();
+  rotMsg.classList.remove('show');
+  rotMsg.style.display = 'none';
   buildWorld();
   startSensor();
   if (IS_DESKTOP) setupMouseDrag();
