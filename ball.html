@@ -108,9 +108,10 @@ let sensorOk = false, sensorAttached = false;
 let signDetected = false, signFactor = 1;
 
 // Wall state — rebuilt when gravity direction changes enough
-let lastWallAngle = null;   // angle (atan2) at last wall build
+let lastWallAngle   = null;   // angle (atan2) at last wall build
+let currentFloorEdge = 'bottom'; // hysteresis: current floor edge, changes only at 60° threshold
 // Gap info for overlay (in screen coords)
-// Each gap: { x0,y0, x1,y1 } — the open segment on the wall edge
+// Each gap: { x0,y0, x1,y1, isExit } — the open segment on the wall edge
 let gapInfoLeft  = null;
 let gapInfoRight = null;
 let gapInfoTop   = null;
@@ -224,18 +225,37 @@ function buildWalls(gx, gy){
   const T  = CFG.WALL_T;
   const wo = { isStatic:true, restitution:CFG.RESTITUTION, friction:CFG.FRICTION, label:'wall' };
 
-  // Snap gravity to one of 4 cardinal directions
-  const ang = gravAngle(gx, gy);   // -π..π, 0 = gravity pointing down (screen)
-  // Determine which screen edge is the "floor" (gravity target)
-  // ang ≈  0           → floor = bottom
-  // ang ≈  π/2 (90°)  → floor = right
-  // ang ≈ -π/2 (-90°) → floor = left
-  // ang ≈ ±π          → floor = top
-  let floorEdge; // 'bottom'|'top'|'left'|'right'
-  if (Math.abs(ang) < Math.PI/4)           floorEdge = 'bottom';
-  else if (ang >  Math.PI*3/4 || ang < -Math.PI*3/4) floorEdge = 'top';
-  else if (ang > 0)                         floorEdge = 'right';
-  else                                      floorEdge = 'left';
+  // ── Hysteresis floor-edge selection ───────────────────────────────
+  // The floor edge only changes when the gravity vector crosses 60° away
+  // from the *centre* of the current edge's axis. This means the device
+  // must be tilted more than 60° before the spawn/floor assignment flips.
+  // (Standard 45° threshold had no hysteresis and flickered at boundaries.)
+  const ang = gravAngle(gx, gy);  // -π..π; 0 = gravity pointing straight down
+
+  // Angle of the centre of each edge's axis (floor meaning):
+  //   bottom → 0, right → π/2, top → ±π, left → -π/2
+  const edgeCentreAngle = { bottom:0, right:Math.PI/2, top:Math.PI, left:-Math.PI/2 };
+  const HYST_RAD = Math.PI / 3; // 60° — must exceed this to switch edge
+
+  // Compute angular distance from current floor edge centre
+  function angDist(a, b){
+    let d = Math.abs(a - b);
+    if (d > Math.PI) d = 2*Math.PI - d;
+    return d;
+  }
+
+  // Only switch if gravity has moved more than 60° from current floor centre
+  if (angDist(ang, edgeCentreAngle[currentFloorEdge]) > HYST_RAD){
+    // Find the nearest edge centre
+    let best = currentFloorEdge, bestD = Infinity;
+    for (const [edge, centre] of Object.entries(edgeCentreAngle)){
+      const d = angDist(ang, centre);
+      if (d < bestD){ bestD = d; best = edge; }
+    }
+    currentFloorEdge = best;
+  }
+
+  const floorEdge = currentFloorEdge;
 
   // Ceiling = opposite of floor (spawn entry)
   const ceilEdge = {bottom:'top', top:'bottom', left:'right', right:'left'}[floorEdge];
@@ -260,11 +280,19 @@ function buildWalls(gx, gy){
     const y    = ceilEdge==='top' ? -capH/2 : H+capH/2;
     wallBodies.push(mk(capW/2,   y, capW, capH));
     wallBodies.push(mk(W-capW/2, y, capW, capH));
+    // Ceiling gap overlay: the open span between the two caps
+    const yScreen = ceilEdge==='top' ? 0 : H;
+    const spawnInfo = { x0:W*0.10, y0:yScreen, x1:W*0.90, y1:yScreen, horiz:true, isExit:false };
+    if (ceilEdge==='top') gapInfoTop = spawnInfo; else gapInfoBot = spawnInfo;
   } else {
     const capH = H * 0.10, capW = T * 0.5;
     const x    = ceilEdge==='left' ? -capW/2 : W+capW/2;
     wallBodies.push(mk(x, capH/2,   capW, capH));
     wallBodies.push(mk(x, H-capH/2, capW, capH));
+    // Ceiling gap overlay: vertical open span
+    const xScreen = ceilEdge==='left' ? 0 : W;
+    const spawnInfo = { x0:xScreen, y0:H*0.10, x1:xScreen, y1:H*0.90, horiz:false, isExit:false };
+    if (ceilEdge==='left') gapInfoLeft = spawnInfo; else gapInfoRight = spawnInfo;
   }
 
   // ── Sides: EXIT_GAP_FRAC opening centred ───────────────────────
@@ -279,8 +307,8 @@ function buildWalls(gx, gy){
         wallBodies.push(mk(x, capH/2,      T, capH));
         wallBodies.push(mk(x, H-capH/2,    T, capH));
       }
-      // Store for overlay
-      const info = { x0:edge==='left'?0:W, y0:gapTop, x1:edge==='left'?0:W, y1:gapBot, horiz:false };
+      // Store for overlay — isExit=true → arrow points outward
+      const info = { x0:edge==='left'?0:W, y0:gapTop, x1:edge==='left'?0:W, y1:gapBot, horiz:false, isExit:true };
       if (edge==='left') gapInfoLeft = info; else gapInfoRight = info;
     } else {
       const y      = edge==='top' ? -T/2 : H+T/2;
@@ -293,7 +321,7 @@ function buildWalls(gx, gy){
         wallBodies.push(mk(W-capW/2, y, capW, T));
       }
       const yScreen = edge==='top' ? 0 : H;
-      const info = { x0:gapL, y0:yScreen, x1:gapR, y1:yScreen, horiz:true };
+      const info = { x0:gapL, y0:yScreen, x1:gapR, y1:yScreen, horiz:true, isExit:true };
       if (edge==='top') gapInfoTop = info; else gapInfoBot = info;
     }
   }
@@ -307,18 +335,12 @@ function buildWalls(gx, gy){
 // Balls always enter from the "ceiling" edge (opposite to gravity).
 // ═══════════════════════════════════════════
 
-// Given the current gravity vector, return the spawn edge and a
-// random position along it for a ball of the given radius.
+// Given the current gravity vector, return spawn position for a ball of given radius.
+// Always spawns from the ceiling edge (opposite of currentFloorEdge).
 function spawnPosForGravity(gx, gy, radius){
-  const ang = gravAngle(gx, gy);
+  const opposite = {bottom:'top', top:'bottom', left:'right', right:'left'};
+  const spawnEdge = opposite[currentFloorEdge];
   const margin = radius + 4;
-
-  // Ceiling edge is opposite to floor
-  let spawnEdge;
-  if      (Math.abs(ang) < Math.PI/4)                   spawnEdge = 'top';
-  else if (ang > Math.PI*3/4 || ang < -Math.PI*3/4)     spawnEdge = 'bottom';
-  else if (ang > 0)                                      spawnEdge = 'left';
-  else                                                   spawnEdge = 'right';
 
   let x, y, vx, vy;
   switch(spawnEdge){
@@ -343,7 +365,7 @@ function spawnPosForGravity(gx, gy, radius){
       vx = -0.5; vy = (Math.random()-0.5)*3;
       break;
   }
-  return {x, y, vx, vy, spawnEdge};
+  return {x, y, vx, vy};
 }
 
 function canSpawnAt(sx, sy, radius){
@@ -503,27 +525,35 @@ function drawOverlay(){
   const a=0.20+0.28*pulse;
   c.strokeStyle=`rgba(0,255,120,${a})`;c.fillStyle=`rgba(0,255,120,${a})`;c.lineWidth=1.5;
 
-  // Draw each gap (exit openings)
+  // Draw each gap
+  // isExit=true  → arrow points OUTWARD (away from screen centre)
+  // isExit=false → arrow points INWARD  (toward screen centre, spawn entry)
   function drawGap(info){
     if(!info)return;
     if(info.horiz){
-      // top or bottom horizontal gap
       const mx=(info.x0+info.x1)/2, my=info.y0;
-      // tick marks
-      c.beginPath();c.moveTo(info.x0,my);c.lineTo(info.x0,my+(my<H/2?12:-12));c.stroke();
-      c.beginPath();c.moveTo(info.x1,my);c.lineTo(info.x1,my+(my<H/2?12:-12));c.stroke();
-      // gap line
+      const isTop = my < H/2;
+      // tick marks (always pointing inward a little)
+      const tickDir = isTop ? 12 : -12;
+      c.beginPath();c.moveTo(info.x0,my);c.lineTo(info.x0,my+tickDir);c.stroke();
+      c.beginPath();c.moveTo(info.x1,my);c.lineTo(info.x1,my+tickDir);c.stroke();
+      // gap line along the edge
       c.beginPath();c.moveTo(info.x0,my);c.lineTo(info.x1,my);c.stroke();
-      // arrow into the screen
-      _arrow(c,mx,my,0,my<H/2?1:-1,22);
+      // arrow direction: spawn→inward, exit→outward
+      const arrowDir = info.isExit ? (isTop ? -1 : 1) : (isTop ? 1 : -1);
+      _arrow(c,mx,my,0,arrowDir,22);
     } else {
-      // left or right vertical gap
       const mx=info.x0, my=(info.y0+info.y1)/2;
-      const dir=mx<W/2?1:-1;
-      c.beginPath();c.moveTo(mx,info.y0);c.lineTo(mx+dir*12,info.y0);c.stroke();
-      c.beginPath();c.moveTo(mx,info.y1);c.lineTo(mx+dir*12,info.y1);c.stroke();
+      const isLeft = mx < W/2;
+      // tick marks pointing inward
+      const tickDir = isLeft ? 12 : -12;
+      c.beginPath();c.moveTo(mx,info.y0);c.lineTo(mx+tickDir,info.y0);c.stroke();
+      c.beginPath();c.moveTo(mx,info.y1);c.lineTo(mx+tickDir,info.y1);c.stroke();
+      // gap line along the edge
       c.beginPath();c.moveTo(mx,info.y0);c.lineTo(mx,info.y1);c.stroke();
-      _arrow(c,mx,my,dir,0,22);
+      // arrow direction: spawn→inward, exit→outward
+      const arrowDir = info.isExit ? (isLeft ? -1 : 1) : (isLeft ? 1 : -1);
+      _arrow(c,mx,my,arrowDir,0,22);
     }
   }
   drawGap(gapInfoLeft);drawGap(gapInfoRight);
@@ -572,7 +602,12 @@ function onDown(e){
   for(const entry of[...balls].sort((a,b)=>a.radius-b.radius)){
     const dx=entry.body.position.x-x,dy=entry.body.position.y-y;
     if(Math.hypot(dx,dy)<=entry.radius*bonus){
-      drag={entry};Body.setStatic(entry.body,true);e.preventDefault();return;
+      drag={entry};
+      Body.setStatic(entry.body,true);
+      // Pause the automatic runner; we'll step manually in the loop
+      // so time doesn't accumulate and burst when released.
+      if(IS_MOBILE && runner){ Runner.stop(runner); }
+      e.preventDefault();return;
     }
   }
 }
@@ -580,7 +615,10 @@ function onMove(e){const{x,y}=getPos(e);mVX=x-mX;mVY=y-mY;mX=x;mY=y;if(drag)e.pr
 function onUp(e){
   if(!drag)return;e.preventDefault();
   Body.setStatic(drag.entry.body,false);
-  Body.setVelocity(drag.entry.body,{x:mVX*1.3,y:mVY*1.3});drag=null;
+  Body.setVelocity(drag.entry.body,{x:mVX*1.3,y:mVY*1.3});
+  drag=null;
+  // Resume automatic runner
+  if(IS_MOBILE && runner){ Runner.run(runner,engine); }
 }
 function setupDrag(){
   document.addEventListener('mousedown',onDown);document.addEventListener('mousemove',onMove);document.addEventListener('mouseup',onUp);
@@ -624,11 +662,13 @@ function loop(){
     buildWalls(gx,gy);
   }
 
-  // Drag
+  // Drag — move ball to pointer position
   if(drag){
     const b=drag.entry.body;
     Body.setVelocity(b,{x:mVX*.6,y:mVY*.6});
     Body.setPosition(b,{x:b.position.x+(mX-b.position.x)*.35,y:b.position.y+(mY-b.position.y)*.35});
+    // When runner is paused (mobile drag), step engine manually once per frame
+    if(IS_MOBILE){ Engine.update(engine, 1000/60); }
   }
 
   if(now-lastEscapeMs>CFG.ESCAPE_MS){checkEscapes();lastEscapeMs=now;}
