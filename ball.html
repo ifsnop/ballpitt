@@ -122,7 +122,7 @@ const { Engine, Runner, Bodies, Composite } = Matter;
 
 // ── Constants ──────────────────────────────────────────────────────────────
 const WALL         = 40;
-const RADIUS       = 22;
+const RADIUS       = 44;
 const RESTITUTION  = 0.72;
 const FRICTION     = 0.001;
 const FRICTION_AIR = 0.012;
@@ -228,113 +228,88 @@ function initGL() {
 
   // ── Fragment shader ───────────────────────────────────────────────────────
   // Draws:
-  //   1. Dot-grid background
-  //   2. Inside the bubble radius: samples the grid texture with a
-  //      fish-eye / sphere-refraction UV distortion (Snell's law approx)
-  //   3. Iridescent rim on bubble
-  //   4. Specular highlights
+  //   1. Line-grid background (horizontal + vertical lines)
+  //   2. Inside the bubble radius: sphere-refraction UV distortion
+  //   3. Minimal speculars (no iridescent rim)
   const fsrc = `
     precision mediump float;
-    varying vec2 vUv;           // 0..1 screen UV
-    uniform vec2  uRes;         // px
-    uniform vec2  uBall;        // px, ball centre
-    uniform float uRadius;      // px
+    varying vec2 vUv;
+    uniform vec2  uRes;
+    uniform vec2  uBall;
+    uniform float uRadius;
     uniform float uTime;
 
-    // ── Grid ────────────────────────────────────────────────────────────────
+    // ── Line grid ────────────────────────────────────────────────────────────
     float grid(vec2 px) {
-      float gs = 28.0;          // cell size px
-      vec2 g  = mod(px, gs);
-      float dot = length(g - gs*0.5);
-      return smoothstep(1.4, 0.6, dot);   // soft dot
+      float gs   = 32.0;          // cell size px
+      float lw   = 0.7;           // line half-width px
+      vec2  g    = mod(px, gs);
+      float lineH = smoothstep(lw+0.8, lw, abs(g.y - 0.0));
+      float lineV = smoothstep(lw+0.8, lw, abs(g.x - 0.0));
+      return max(lineH, lineV);
     }
 
-    // ── Sphere refraction UV ─────────────────────────────────────────────────
-    // Given normalised offset from centre (nx,ny) within the unit disc,
-    // returns a displaced UV to sample the background (fish-eye lens effect).
+    // ── Sphere refraction UV ──────────────────────────────────────────────────
     vec2 refractionUV(vec2 fragPx, vec2 centre, float r) {
       vec2  d  = fragPx - centre;
-      float nd = length(d) / r;              // 0..1 inside sphere
-      float nz = sqrt(max(0.0, 1.0 - nd*nd)); // z on unit sphere
-      // Refraction index water ≈ 1.33 — maps incident ray to refracted
-      float eta = 0.72;
+      float nd = length(d) / r;
+      float nz = sqrt(max(0.0, 1.0 - nd*nd));
+      float eta = 0.68;
       vec2 nxy  = d / r;
       vec2 refr = nxy / eta - nxy * (nz / eta - nz) / (nz + 0.001);
-      // Map refracted offset back to screen UV
-      vec2 samplePx = centre + refr * r * 1.6;
+      vec2 samplePx = centre + refr * r * 1.55;
       return samplePx / uRes;
-    }
-
-    // ── Iridescent hue from angle ──────────────────────────────────────────
-    vec3 iridescence(float t, float phase) {
-      return 0.5 + 0.5 * cos(6.2832 * (vec3(0.0, 0.33, 0.67) + t + phase));
     }
 
     void main() {
       vec2 fragPx = vUv * uRes;
-      fragPx.y    = uRes.y - fragPx.y;   // flip Y (WebGL bottom-left)
+      fragPx.y    = uRes.y - fragPx.y;
 
-      // ── Background grid ──────────────────────────────────────────────────
-      float g   = grid(fragPx);
-      vec3  bgCol = vec3(0.04, 0.04, 0.07);       // dark background
-      vec3  dotCol= vec3(0.10, 0.13, 0.18);        // grid dot colour
-      vec3  bg  = mix(bgCol, dotCol, g * 0.55);
+      // Background
+      float g    = grid(fragPx);
+      vec3  bgCol  = vec3(0.04, 0.04, 0.07);
+      vec3  lineCol= vec3(0.16, 0.20, 0.28);
+      vec3  bg   = mix(bgCol, lineCol, g);
 
-      // ── Distance to ball ─────────────────────────────────────────────────
+      // Distance to ball
       vec2  d2ball = fragPx - uBall;
       float dist   = length(d2ball);
       float r      = uRadius;
 
       if (dist > r) {
-        // Outside bubble: plain background
         gl_FragColor = vec4(bg, 1.0);
         return;
       }
 
-      // ── Inside bubble ────────────────────────────────────────────────────
-      float nd = dist / r;                          // 0=centre 1=edge
+      float nd = dist / r;
       float nz = sqrt(max(0.0, 1.0 - nd*nd));
 
-      // Refracted background sample
-      vec2 sUV    = refractionUV(fragPx, uBall, r);
-      sUV         = clamp(sUV, 0.0, 1.0);
-      // Re-evaluate grid at refracted position
-      vec2 sPx    = sUV * uRes;
-      sPx.y       = uRes.y - sPx.y;
-      float sg    = grid(sPx);
-      vec3  sBg   = mix(bgCol, dotCol, sg * 0.55);
+      // Refracted grid sample
+      vec2 sUV  = refractionUV(fragPx, uBall, r);
+      sUV       = clamp(sUV, 0.0, 1.0);
+      vec2 sPx  = sUV * uRes;
+      sPx.y     = uRes.y - sPx.y;
+      float sg  = grid(sPx);
+      vec3  sBg = mix(bgCol, lineCol, sg);
 
-      // Rim mask — thin band at the edge
-      float rim   = smoothstep(0.72, 0.82, nd) * smoothstep(1.0, 0.88, nd);
+      // Very faint interior tint
+      vec3 tint = vec3(0.80, 0.94, 1.0) * 0.04 * (1.0 - nd);
 
-      // Iridescent colour on rim
-      float angle = atan(d2ball.y, d2ball.x) / 6.2832 + 0.5;
-      vec3  iri   = iridescence(angle + uTime * 0.08, nd * 1.8);
-      iri        *= rim * 0.7;
+      vec3 col  = sBg + tint;
 
-      // Interior tint (very faint bluish)
-      vec3 tint   = vec3(0.78, 0.93, 1.0) * 0.06 * (1.0 - nd);
+      // Primary specular — soft, dim
+      vec2 sp1  = d2ball - vec2(-r*0.38, -r*0.38);
+      float s1  = exp(-dot(sp1,sp1) / (2.0*(r*0.20)*(r*0.20)));
+      col      += vec3(1.0) * s1 * 0.28;
 
-      // Compose: refracted bg + tint + iridescent rim
-      vec3 col    = sBg + tint + iri;
+      // Tiny sharp dot
+      vec2 sp2  = d2ball + vec2(r*0.22, r*0.28);
+      float s2  = exp(-dot(sp2,sp2) / (2.0*(r*0.055)*(r*0.055)));
+      col      += vec3(1.0) * s2 * 0.55;
 
-      // Primary specular (top-left)
-      vec2 specOff = d2ball - vec2(-r*0.38, -r*0.38);
-      float spec1  = exp(-dot(specOff,specOff) / (2.0 * (r*0.22)*(r*0.22)));
-      col         += vec3(1.0) * spec1 * 0.82;
-
-      // Tiny hard dot
-      float spec2  = exp(-dot(d2ball + vec2(r*0.22,r*0.28), d2ball + vec2(r*0.22,r*0.28)) / (2.0*(r*0.06)*(r*0.06)));
-      col         += vec3(1.0) * spec2 * 0.95;
-
-      // Counter-reflection (bottom-right, tinted)
-      vec2 cr      = d2ball - vec2(r*0.42, r*0.42);
-      float spec3  = exp(-dot(cr,cr) / (2.0*(r*0.18)*(r*0.18)));
-      col         += vec3(0.78,0.93,1.0) * spec3 * 0.28;
-
-      // Soft alpha fade at very edge
-      float edgeMask = smoothstep(1.0, 0.94, nd);
-      col = mix(bg, col, edgeMask);
+      // Edge fade
+      float edge = smoothstep(1.0, 0.92, nd);
+      col = mix(bg, col, edge);
 
       gl_FragColor = vec4(col, 1.0);
     }`;
@@ -483,27 +458,11 @@ function startSensor() {
   if (typeof DeviceMotionEvent !== 'undefined' &&
       typeof DeviceMotionEvent.requestPermission === 'function') {
     DeviceMotionEvent.requestPermission()
-      .then(s => { if (s==='granted') window.addEventListener('devicemotion', onMotion); else fallbackPointer(); })
-      .catch(fallbackPointer);
+      .then(s => { if (s==='granted') window.addEventListener('devicemotion', onMotion); })
+      .catch(()=>{});
   } else if (typeof DeviceMotionEvent !== 'undefined') {
     window.addEventListener('devicemotion', onMotion);
-    setTimeout(() => { if (!sensorOk) fallbackPointer(); }, 1200);
-  } else {
-    fallbackPointer();
   }
-}
-
-function fallbackPointer() {
-  sensorOk = false;
-  function onPtr(e) {
-    const cx = e.clientX ?? e.touches?.[0]?.clientX ?? W/2;
-    const cy = e.clientY ?? e.touches?.[0]?.clientY ?? H/2;
-    ay =  ((cx/W) - 0.5) * 2 * 9.8;
-    ax = -((cy/H) - 0.5) * 2 * 9.8;
-    sensorOk = true;
-  }
-  window.addEventListener('mousemove', onPtr);
-  window.addEventListener('touchmove', onPtr, { passive: true });
 }
 
 // ── Resize ─────────────────────────────────────────────────────────────────
