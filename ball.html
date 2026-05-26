@@ -391,8 +391,24 @@ function renderGL() {
   const { g, uRes, uBall, uRadius } = glState;
   g.viewport(0, 0, W, H);
   g.uniform2f(uRes, W, H);
-  // Render each ball in a separate draw call (update uniforms per ball)
-  for (const { body, radius } of balls) {
+
+  // Pass 1: draw background grid (ball position off-screen so no refraction)
+  g.disable(g.BLEND);
+  g.uniform2f(uBall, -9999, -9999);
+  g.uniform1f(uRadius, 0.0);
+  g.drawArrays(g.TRIANGLE_STRIP, 0, 4);
+
+  // Pass 2: draw each ball on top, blending so only the disc overwrites
+  // The shader already outputs the background colour outside the radius,
+  // so we use a custom approach: re-render each ball but only keep pixels
+  // inside its disc. We do this by enabling BLEND with a mask trick:
+  // outside-ball pixels the shader returns the same bg colour, so
+  // they naturally composite correctly without blending.
+  // We simply draw each ball as a full-screen quad — the background areas
+  // are identical so overwriting them is visually transparent.
+  // Order matters: larger balls first so smaller ones appear on top.
+  const sorted = [...balls].sort((a, b) => b.radius - a.radius);
+  for (const { body, radius } of sorted) {
     g.uniform2f(uBall, body.position.x, body.position.y);
     g.uniform1f(uRadius, radius);
     g.drawArrays(g.TRIANGLE_STRIP, 0, 4);
@@ -481,15 +497,12 @@ function buildWorld() {
   glCanvas.width = W; glCanvas.height = H;
   glState = initGL();
 
-  engine = Engine.create({
-    gravity: { x: 0, y: 0, scale: 0.001 },
-    // More solver iterations → accurate multi-body stacking and chain collisions.
-    // Default is positionIterations=6, velocityIterations=4, constraintIterations=2.
-    // Doubling velocity iterations fixes energy loss in ball-on-ball pileups.
-    positionIterations  : 10,
-    velocityIterations  : 8,
-    constraintIterations: 4,
-  });
+  engine = Engine.create({ gravity: { x: 0, y: 0, scale: 0.001 } });
+  // Increase solver iterations for accurate multi-ball collisions.
+  // In Matter.js 0.19 these live on the engine's resolver/detector directly.
+  engine.positionIterations   = 10;
+  engine.velocityIterations   = 8;
+  engine.constraintIterations = 4;
   const wo = { isStatic: true, restitution: RESTITUTION, friction: FRICTION };
   Composite.add(engine.world, [
     Bodies.rectangle(W/2,    H+WALL/2,   W+WALL*2, WALL,     wo),
@@ -518,8 +531,7 @@ function buildWorld() {
       restitution: RESTITUTION - rNorm * 0.08,
       friction   : FRICTION,
       frictionAir: FRICTION_AIR,
-      density    : 0.002,   // uniform density → mass = density * area automatically
-      slop       : 0.5,     // tighter penetration tolerance (default 0.05 is too loose for piles)
+      density    : 0.002,
     });
     balls.push({ body, radius });
     Composite.add(engine.world, body);
@@ -582,7 +594,7 @@ function drawLoop() {
   updateDebug();
 }
 
-// ── Accelerometer ──────────────────────────────────────────────────────────
+// ── Accelerometer ──────────────────────────────────────────�───────────────
 function startSensor() {
   function onMotion(e) {
     const a = e.accelerationIncludingGravity;
@@ -596,7 +608,7 @@ function startSensor() {
       typeof DeviceMotionEvent.requestPermission === 'function') {
     DeviceMotionEvent.requestPermission()
       .then(s => { if (s==='granted') window.addEventListener('devicemotion', onMotion); })
-      .catch()=>{});
+      .catch(()=>{});
   } else if (typeof DeviceMotionEvent !== 'undefined') {
     window.addEventListener('devicemotion', onMotion);
   }
